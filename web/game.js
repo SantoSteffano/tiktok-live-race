@@ -281,17 +281,22 @@ function makeBody(id, name, bot) {
     const c = new THREE.Mesh(new THREE.ConeGeometry(0.16, 0.42, 4), hairMat);
     c.position.set(-0.3 + i * 0.2, 0.68, 0.05); c.rotation.z = (i - 1.5) * 0.2; hair.add(c);
   } else if (style === 2) { part(hairMat, 1.06, 0.2, 1.06, 0, 0.56, 0, hair); part(hairMat, 1.06, 0.7, 0.18, 0, 0.18, 0.5, hair); } // длинные
-  const limb = (mat, x, y, len, w, end, endMat) => {
+  // конечности из двух сегментов: плечо + предплечье, бедро + голень (есть локти и колени)
+  const limb = (x, y, upper, lower, w, upMat, lowMat, end, endMat) => {
     const pivot = new THREE.Group(); pivot.position.set(x, y, 0);
-    part(mat, w, len, w, 0, -len / 2, 0, pivot);
-    if (end) part(endMat, ...end, pivot);
+    part(upMat, w, upper, w, 0, -upper / 2, 0, pivot);
+    const joint = new THREE.Group(); joint.position.y = -upper;
+    pivot.add(joint);
+    part(lowMat, w * 0.94, lower, w * 0.94, 0, -lower / 2, 0, joint);
+    part(endMat, ...end.slice(0, 3), end[3], -lower - end[1] / 2 + 0.04, end[4], joint);
     body.add(pivot);
+    pivot.joint = joint;
     return pivot;
   };
-  const armL = limb(shirtMat, -0.64, 1.92, 0.8, 0.3, [0.28, 0.26, 0.28, 0, -0.93, 0], skinMat);
-  const armR = limb(shirtMat, 0.64, 1.92, 0.8, 0.3, [0.28, 0.26, 0.28, 0, -0.93, 0], skinMat);
-  const legL = limb(pantsMat, -0.24, 0.95, 0.82, 0.38, [0.42, 0.2, 0.6, 0, -0.9, -0.08], shoeMat);
-  const legR = limb(pantsMat, 0.24, 0.95, 0.82, 0.38, [0.42, 0.2, 0.6, 0, -0.9, -0.08], shoeMat);
+  const armL = limb(-0.64, 1.92, 0.42, 0.36, 0.3, shirtMat, skinMat, [0.28, 0.24, 0.28, 0, 0], skinMat);
+  const armR = limb(0.64, 1.92, 0.42, 0.36, 0.3, shirtMat, skinMat, [0.28, 0.24, 0.28, 0, 0], skinMat);
+  const legL = limb(-0.24, 0.95, 0.44, 0.38, 0.38, pantsMat, pantsMat, [0.42, 0.18, 0.62, 0, -0.1], shoeMat);
+  const legR = limb(0.24, 0.95, 0.44, 0.38, 0.38, pantsMat, pantsMat, [0.42, 0.18, 0.62, 0, -0.1], shoeMat);
   root.scale.setScalar(0.88);
   const auraSprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: softTex, color: 0xb44dff, transparent: true, depthWrite: false, opacity: 0 }));
   auraSprite.scale.set(4, 5, 1); auraSprite.position.y = 1.6;
@@ -336,6 +341,41 @@ function setAccessory(r) {
   am.opacity = r.tier >= 4 ? 0.8 : 0;
   am.color.set(r.tier >= 5 ? 0xffd23f : 0xb44dff);
 }
+
+// ---------------- анимации ----------------
+// Поза: углы суставов (плечи/локти, бёдра/колени), наклон, разворот и
+// покачивание корпуса. Всё, что не задано, — 0. Знаки: + у плеча и бедра —
+// вперёд, + у локтя — сгиб, − у колена — сгиб; z у рук — в стороны.
+function pose(b, P) {
+  const g = k => P[k] || 0;
+  b.body.rotation.set(g('lean'), g('twist') + g('spin'), g('roll'));
+  b.body.position.set(g('sx'), g('bob'), 0);
+  b.head.rotation.set(g('headX'), g('headY'), g('headZ'));
+  b.armL.rotation.set(g('shL'), 0, g('shLz') - 0.08); b.armL.joint.rotation.x = g('elL');
+  b.armR.rotation.set(g('shR'), 0, g('shRz') + 0.08); b.armR.joint.rotation.x = g('elR');
+  b.legL.rotation.set(g('hipL'), 0, g('hipLz')); b.legL.joint.rotation.x = g('knL');
+  b.legR.rotation.set(g('hipR'), 0, g('hipRz')); b.legR.joint.rotation.x = g('knR');
+}
+
+const DANCES = {
+  idle: (t, r) => ({ bob: Math.sin(t * 2 + r.wp) * 0.03, headY: Math.sin(t * 0.7 + r.wp) * 0.5,
+    shL: Math.sin(t * 2 + r.wp) * 0.08, shR: -Math.sin(t * 2 + r.wp) * 0.08, elL: 0.2, elR: 0.2 }),
+  bounce: (t, r) => { const s = Math.sin(t * 7 + r.wp); return { bob: -0.12 + s * 0.1, knL: -0.4 - s * 0.3, knR: -0.4 - s * 0.3,
+    hipL: 0.25 + s * 0.15, hipR: 0.25 + s * 0.15, shL: 0.6, shR: 0.6, elL: 1.5 + s * 0.3, elR: 1.5 - s * 0.3, headX: s * 0.15 }; },
+  floss: (t, r) => { const s = Math.sin(t * 7 + r.wp); return { sx: -s * 0.18, roll: s * 0.12, shL: s * 0.7, shR: s * 0.7,
+    shLz: -0.35 + s * 0.35, shRz: 0.35 + s * 0.35, elL: 0.05, elR: 0.05, hipLz: s * 0.15, hipRz: s * 0.15 }; },
+  griddy: (t, r) => { const s = Math.sin(t * 8 + r.wp), up = Math.max(0, s), dn = Math.max(0, -s);
+    return { lean: 0.2, hipL: up * 1.3, knL: -up * 1.8, hipR: dn * 1.3, knR: -dn * 1.8, shL: -0.4 + s * 0.4, shR: -0.4 - s * 0.4,
+      shLz: -0.6, shRz: 0.6, elL: 1.7, elR: 1.7, bob: 0.08 * Math.abs(s) }; },
+  wave: (t, r) => ({ shRz: 2.6, shR: 0.3, elR: 0.6 + Math.sin(t * 9 + r.wp) * 0.5, shL: 0.1, elL: 0.3, headZ: -0.15,
+    bob: Math.sin(t * 3) * 0.03 }),
+  dab: () => ({ shR: 1.9, shRz: 1.0, elR: 0, shL: 1.5, shLz: 0.9, elL: 1.8, headX: 0.45, headY: -0.5, lean: 0.15 }),
+  clap: (t, r) => { const s = Math.abs(Math.sin(t * 8 + r.wp)); return { shL: 1.2, shR: 1.2, shLz: -0.5 + s * 0.45, shRz: 0.5 - s * 0.45,
+    elL: 0.9, elR: 0.9, bob: Math.abs(Math.sin(t * 4)) * 0.3 }; },
+  cheer: (t, r) => { const s = Math.abs(Math.sin(t * 6 + r.wp)); return { shL: 0.3, shR: 0.3, shLz: -2.6, shRz: 2.6, elL: 0.3, elR: 0.3,
+    bob: s * 0.6, knL: -s * 0.6, knR: -s * 0.6, hipL: s * 0.3, hipR: s * 0.3 }; },
+};
+const LOBBY_DANCES = ['idle', 'idle', 'bounce', 'floss', 'griddy', 'wave', 'dab'];
 
 function setMood(r, mood) {
   if (r.body.mood === mood) return;
@@ -809,6 +849,9 @@ function onObstacle(r, ev) {
     r.boosts.push({ mult: 1.7, until: clock + 2.2 });
     sparks.spawn(worldPos(r, 0.4), V(0, 3, 0), { life: 0.5, size: 1.4, color: 0x26e07f });
     sfx('pad', 0.15);
+  } else if (ev.type === 'pass') {
+    // пробежал и не попался — пусть будет видно, что повезло
+    if (!r.hitBy?.has(ev.o) && Math.random() < 0.35) pop(pickMeme(['😮‍💨 ПРОНЕСЛО', '😎 ИЗИ', '🍀 ВЕЗУНЧИК', '🗿 ДАЖЕ НЕ ЗАМЕТИЛ']), headPos(r), '#7dff5a');
   } else if (ev.type === 'slime') {
     burst(worldPos(r, 0.3), 0x6af03a, 10, 4, 0.5);
     sfx('splash', 0.25);
@@ -1198,9 +1241,9 @@ function update(dt) {
       const soon = !r.air && track.sweeperSoon(r.p, r.lat, clock);
       if (soon && r.hopFor !== soon) {
         r.hopFor = soon;
-        if (Math.random() < 0.45) r.air = { from: r.p, len: 12, h: 1.9 };
+        if (Math.random() < 0.3) r.air = { from: r.p, len: 12, h: 1.9 };
       }
-      const hit = track.collide(r.p, r.lat, r.y, clock);
+      const hit = track.collide(r.p, r.lat, r.y, clock, dt);
       // одно препятствие сбивает бегуна максимум один раз
       if (hit && !r.hitBy?.has(hit.o)) { (r.hitBy ||= new Set()).add(hit.o); onHit(r, hit); continue; }
     }
@@ -1268,6 +1311,7 @@ function animate(dt, real) {
       // лежит на спине, руки в стороны, иногда дёргается
       root.position.copy(track.point(r.lying.p, r.lying.lat, 0));
       root.rotation.set(0, r.lying.yaw, 0);
+      pose(b, {});
       b.body.rotation.set(Math.PI / 2, 0, 0);
       b.body.position.set(0, 0.35, 0);
       b.armL.rotation.set(0, 0, 1.3 + Math.sin(real * 3 + r.wp) * 0.1);
@@ -1287,47 +1331,67 @@ function animate(dt, real) {
 
     const stunned = r.stunUntil > clock;
     const running = phase === 'race' && r.place === null && !stunned;
-    if (running) r.anim += dt * (r.speed || 10) * 0.5;
-    b.body.rotation.set(0, 0, 0);
+    const strong = r.boosts.some(x => x.mult >= 1.5);
+    if (running) r.anim += dt * (r.speed || 10) * (strong ? 0.42 : 0.5);
+    const P = {};
     if (r.dance) {
-      const t = real * 8;
-      b.armL.rotation.set(Math.PI + Math.sin(t) * 0.4, 0, 0.3);
-      b.armR.rotation.set(Math.PI + Math.sin(t + 2) * 0.4, 0, -0.3);
-      b.legL.rotation.x = b.legR.rotation.x = 0;
-      b.body.position.y = Math.abs(Math.sin(t / 2)) * 0.5;
+      // пьедестал: победитель — флосс и даб, остальные хлопают и прыгают
+      if (r.podium === 0) Object.assign(P, Math.floor(real / 2.5) % 2 ? DANCES.dab(real, r) : DANCES.floss(real, r));
+      else Object.assign(P, DANCES.clap(real, r));
+    } else if (stunned && r.knock && clock - r.knock.t < KNOCK_TIME) {
+      // кувырок в воздухе, руки-ноги болтаются
+      const k = (clock - r.knock.t) / KNOCK_TIME;
+      Object.assign(P, { lean: -k * Math.PI * 2, roll: r.knock.dir * 0.7, bob: Math.sin(k * Math.PI) * 2.5,
+        shLz: -1.4 + Math.sin(real * 30) * 0.4, shRz: 1.4 + Math.cos(real * 27) * 0.4, elL: 0.8, elR: 0.8,
+        hipLz: -0.5, hipRz: 0.5, knL: -1.2, knR: -0.4 });
     } else if (stunned) {
-      if (r.knock && clock - r.knock.t < KNOCK_TIME) {
-        const k = (clock - r.knock.t) / KNOCK_TIME;
-        b.body.rotation.set(-k * Math.PI * 2, 0, r.knock.dir * 0.6);
-        b.body.position.y = Math.sin(k * Math.PI) * 2.5;
-      } else {
-        b.body.rotation.y = real * 9;
-        b.body.position.y = 0;
-      }
-      b.armL.rotation.set(0, 0, 0.6); b.armR.rotation.set(0, 0, -0.6);
+      // кружится голова: шатается, руки висят
+      const w = real * 5 + r.wp;
+      Object.assign(P, { spin: real * 4, roll: Math.sin(w) * 0.25, headX: 0.3, headZ: Math.sin(w * 1.3) * 0.3,
+        shL: Math.sin(w) * 0.4, shR: -Math.sin(w) * 0.4, elL: 0.3, elR: 0.3, knL: -0.4, knR: -0.4, hipL: 0.2, hipR: 0.2, bob: -0.12 });
     } else if (r.jumpLeft > 0) {
-      b.armL.rotation.set(Math.PI, 0, 0.2); b.armR.rotation.set(Math.PI, 0, -0.2);
-      b.legL.rotation.x = 0.4; b.legR.rotation.x = -0.4;
+      // джетпак — поза супермена
+      Object.assign(P, { lean: -1.2, shR: 2.9, elR: 0, shL: -0.5, elL: 0.4, hipL: -0.15, hipR: -0.3 + Math.sin(real * 14) * 0.15,
+        knL: -0.3, knR: -0.6, headX: -0.6 });
       const back = worldPos(r, 1.2);
       puffs.spawn(back, V(rand(-0.5, 0.5), -6, rand(-0.5, 0.5)), { life: 0.4, size: 1.1, color: 0xff8a1a, grow: 1 });
       sparks.spawn(back, V(rand(-0.3, 0.3), -5, rand(-0.3, 0.3)), { life: 0.3, size: 0.6, color: 0xffe0a0 });
+    } else if (running && r.air) {
+      // трамплин: группировка, руки вверх
+      const k = clamp((r.p - r.air.from) / r.air.len, 0, 1);
+      Object.assign(P, { lean: -0.2 - Math.sin(k * Math.PI) * 0.3, hipL: 1.3, hipR: 1.1, knL: -1.9, knR: -1.7,
+        shL: 2.4, shR: 2.4, shLz: -0.5, shRz: 0.5, elL: 0.3, elR: 0.3, headX: -0.3 });
     } else if (running) {
-      const s = Math.sin(r.anim);
-      b.legL.rotation.x = s * 0.9; b.legR.rotation.x = -s * 0.9;
-      b.armL.rotation.set(-s * 0.9, 0, 0); b.armR.rotation.set(s * 0.9, 0, 0);
-      b.body.position.y = Math.abs(Math.cos(r.anim)) * 0.18;
-      b.body.rotation.x = -0.12;
-      if (r.air) { b.legL.rotation.x = 0.8; b.legR.rotation.x = -0.3; b.armL.rotation.set(Math.PI * 0.8, 0, 0.4); b.armR.rotation.set(Math.PI * 0.8, 0, -0.4); }
-      if (r.boosts.some(x => x.mult >= 1.5)) {
+      const f = r.anim, sf = Math.sin(f), cf = Math.cos(f);
+      const slime = track.slowdown(r.p) < 1;
+      Object.assign(P, {
+        hipL: sf * 0.95, hipR: -sf * 0.95,
+        knL: -(0.2 + 1.35 * Math.max(0, cf)), knR: -(0.2 + 1.35 * Math.max(0, -cf)),
+        twist: sf * 0.16, headY: -sf * 0.12, roll: sf * 0.04,
+        bob: Math.abs(cf) * 0.2, lean: -0.22,
+      });
+      if (strong) {
+        // турбо — «наруто-бег»: руки назад, сильный наклон
+        Object.assign(P, { shL: -1.45, shR: -1.45, shLz: -0.15, shRz: 0.15, elL: 0.1, elR: 0.1, lean: -0.6, headX: -0.4, twist: sf * 0.08 });
         puffs.spawn(worldPos(r, rand(0.4, 2)).add(V(rand(-0.3, 0.3), 0, rand(-0.3, 0.3))), V(0, rand(0, 1), 0), { life: 0.35, size: 0.9, color: 0xff6a00, grow: 1 });
+      } else if (slime) {
+        // в слизи: машет руками, вязнет
+        Object.assign(P, { shL: 1.2 + sf * 0.8, shR: 1.2 - sf * 0.8, shLz: -0.8, shRz: 0.8, elL: 0.5, elR: 0.5, lean: 0.1 });
+      } else {
+        Object.assign(P, { shL: -sf * 0.95, shR: sf * 0.95, elL: 1.35 + sf * 0.2, elR: 1.35 - sf * 0.2 });
       }
       if (Math.random() < 0.15) puffs.spawn(worldPos(r, 0.1), V(rand(-0.5, 0.5), 0.6, rand(-0.5, 0.5)), { life: 0.5, size: 0.6, grow: 1, color: 0xf5efe6 });
+    } else if (phase === 'race' && r.place !== null) {
+      Object.assign(P, DANCES.cheer(real, r));   // добежал — празднует
     } else {
-      const t = real * 3 + r.wp;
-      b.armL.rotation.set(Math.sin(t) * 0.3, 0, 0.15); b.armR.rotation.set(-Math.sin(t) * 0.3, 0, -0.15);
-      b.legL.rotation.x = b.legR.rotation.x = 0;
-      b.body.position.y = Math.abs(Math.sin(t)) * 0.08;
+      // лобби: каждый пританцовывает по-своему, иногда меняет танец
+      if (!r.danceKind || real > (r.danceUntil || 0)) {
+        r.danceKind = LOBBY_DANCES[(Math.random() * LOBBY_DANCES.length) | 0];
+        r.danceUntil = real + rand(4, 8);
+      }
+      Object.assign(P, DANCES[r.danceKind](real, r));
     }
+    pose(b, P);
     if (b.auraSprite.material.opacity > 0) b.auraSprite.scale.set(4 + Math.sin(real * 4) * 0.4, 5 + Math.sin(real * 4) * 0.5, 1);
   }
 
@@ -1335,6 +1399,7 @@ function animate(dt, real) {
   const leader = racers.length ? racers.reduce((a, b) => (b.p > a.p ? b : a)) : null;
   const packP = racers.length ? racers.reduce((s, r) => s + r.p, 0) / racers.length : 0;
   director.update(dt, real, { phase, leader, packP });
+  speedFx(dt);
   const cap = director.caption;
   const fe = $('#focus');
   if (fe.dataset.text !== cap) {
@@ -1440,6 +1505,40 @@ function fadeOccluders(dt) {
     if (want === 1 && mat.opacity > 0.98) { mat.opacity = 1; mat.transparent = false; }
     mat.depthWrite = mat.opacity > 0.6;
   }
+}
+
+// Ощущение скорости: когда камера несётся, по краям экрана летят «линии
+// скорости» и чуть расширяется угол обзора.
+const speedCanvas = $('#speed'), speedCtx = speedCanvas.getContext('2d');
+const lastCam = V();
+let speedLevel = 0;
+function speedFx(dt) {
+  const camSpeed = lastCam.distanceTo(camera.position) / Math.max(dt, 1e-3);
+  lastCam.copy(camera.position);
+  const fast = phase === 'race' ? clamp((camSpeed - 4) / 10, 0, 1) : 0;
+  const boosted = phase === 'race' && racers.some(r => r.jumpLeft > 0 || r.boosts.some(b => b.mult >= 2)) ? 0.35 : 0;
+  speedLevel += (Math.max(fast, boosted) - speedLevel) * Math.min(1, dt * 4);
+  camera.fov += speedLevel * 7;
+  camera.updateProjectionMatrix();
+  const g = speedCtx, w = speedCanvas.width, h = speedCanvas.height;
+  g.clearRect(0, 0, w, h);
+  if (speedLevel < 0.05) return;
+  const c = toScreen(director.look);
+  const cx = clamp(c.x / 2, w * 0.2, w * 0.8), cy = clamp(c.y / 2, h * 0.25, h * 0.75);
+  const maxR = Math.hypot(w, h) * 0.6;
+  g.strokeStyle = '#fff';
+  g.lineCap = 'round';
+  for (let i = 0, n = Math.round(46 * speedLevel); i < n; i++) {
+    const a = Math.random() * Math.PI * 2;
+    const r0 = maxR * rand(0.42, 0.75), len = rand(40, 150) * speedLevel;
+    g.globalAlpha = rand(0.15, 0.45) * speedLevel;
+    g.lineWidth = rand(1.5, 4);
+    g.beginPath();
+    g.moveTo(cx + Math.cos(a) * r0, cy + Math.sin(a) * r0);
+    g.lineTo(cx + Math.cos(a) * (r0 + len), cy + Math.sin(a) * (r0 + len));
+    g.stroke();
+  }
+  g.globalAlpha = 1;
 }
 
 // ---------------- цикл ----------------

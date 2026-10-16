@@ -186,6 +186,7 @@
   #banner { top: 760px; font-size: 90px; }
   #banner.show { animation-duration: 2s; }
   #focus { display: none; }
+  #speed { position: absolute; inset: 0; width: 1080px; height: 1920px; }
   /* золотая аура по краям экрана в момент победы */
   #aurafx { position: absolute; inset: 0; opacity: 0;
             background: radial-gradient(ellipse at center, rgba(255,210,63,0) 45%, rgba(255,190,40,.55) 85%, rgba(255,160,20,.85) 100%); }
@@ -200,6 +201,7 @@
 <div id="stage">
   <canvas id="gl"></canvas>
   <div id="hud">
+    <canvas id="speed" width="540" height="960"></canvas>
     <div id="tags"></div>
     <div id="title" class="toon">ГОНКА <b>ЧАТА</b></div>
     <div id="phase" class="pill">Подключение…</div>

@@ -4,6 +4,8 @@
 import * as THREE from 'three';
 
 const UP = new THREE.Vector3(0, 1, 0);
+const HAMMER_W = 2.5;   // скорость маятников
+const SWEEP_W = 2.1;    // скорость вертушки, рад/с
 
 function seeded(seed) {
   let s = seed >>> 0;
@@ -139,7 +141,7 @@ export class Track {
       for (let i = 1; i < lanes; i++) g.fillRect(Math.round(i * w / lanes) - 1, 0, 2, h);
     });
     roadTex.wrapT = THREE.RepeatWrapping;
-    this.ribbon(from, to, -W / 2, W / 2, 0.02, { map: roadTex, vRepeat: 10 });
+    this.ribbon(from, to, -W / 2, W / 2, 0.02, { map: roadTex, vRepeat: 4 });
 
     const curbTex = canvasTex(4, 4, (g) => {
       g.fillStyle = '#ff3b4e'; g.fillRect(0, 0, 4, 2);
@@ -152,6 +154,28 @@ export class Track {
       this.ribbon(from, to, Math.min(a, b), Math.max(a, b), 0.18, { map: curbTex, vRepeat: 3 });
       this.ribbon(from, to, side * (W / 2 + 0.7), 0, 0.18, { vertical: true, bottom: -2, color: 0x8f9cff });
     }
+
+    // столбики с флажками вдоль трассы каждые 7 м: проносятся мимо — видно скорость
+    const poles = Math.floor((to - from) / 7) * 2;
+    const poleMesh = new THREE.InstancedMesh(new THREE.CylinderGeometry(0.12, 0.12, 2.6, 6), new THREE.MeshStandardMaterial({ color: 0xffffff }), poles);
+    const flagMesh = new THREE.InstancedMesh(new THREE.BoxGeometry(0.06, 0.7, 1.1), new THREE.MeshStandardMaterial({ color: 0xffffff }), poles);
+    const fm = new THREE.Matrix4(), fq = new THREE.Quaternion(), fc = new THREE.Color();
+    const flagColors = [0xff3b4e, 0xffd23f, 0x3ee8ff, 0x7dff5a, 0xff4fa3, 0x8a5cff];
+    let fi = 0;
+    for (let p = from; p < to && fi < poles; p += 7) {
+      for (const side of [-1, 1]) {
+        const at = this.point(p, side * (W / 2 + 1.4), 0);
+        fq.setFromAxisAngle(UP, this.yaw(p));
+        fm.compose(at.clone().setY(1.3), fq, new THREE.Vector3(1, 1, 1));
+        poleMesh.setMatrixAt(fi, fm);
+        fm.compose(at.clone().setY(2.25).addScaledVector(this.sample(p).tan, -0.55), fq, new THREE.Vector3(1, 1, 1));
+        flagMesh.setMatrixAt(fi, fm);
+        flagMesh.setColorAt(fi, fc.set(flagColors[(fi >> 1) % flagColors.length]));
+        fi++;
+      }
+    }
+    poleMesh.count = flagMesh.count = fi;
+    this.group.add(poleMesh, flagMesh);
 
     // земля, вода и окружение
     const ground = new THREE.Mesh(new THREE.CircleGeometry(900, 48), new THREE.MeshStandardMaterial({ color: 0x7ed957, roughness: 1 }));
@@ -299,7 +323,7 @@ export class Track {
           const R = 7.6;
           const rod = new THREE.Mesh(new THREE.BoxGeometry(0.3, R, 0.3), mat(0xdddddd, { metalness: 0.6 }));
           rod.position.y = -R / 2;
-          const head = shadow(new THREE.Mesh(new THREE.CylinderGeometry(1.2, 1.2, 2.6, 16), mat(0xffffff, { map: stripes('#ff3b4e', '#ffffff') })));
+          const head = shadow(new THREE.Mesh(new THREE.CylinderGeometry(1.45, 1.45, 2.8, 16), mat(0xffffff, { map: stripes('#ff3b4e', '#ffffff') })));
           head.rotation.x = Math.PI / 2;
           head.position.y = -R;
           this.occluders.push(rod);
@@ -356,8 +380,8 @@ export class Track {
     for (const c of this.clouds || []) c.position.x += Math.sin(t * 0.05 + c.position.z) * 0.01;
   }
 
-  hammerAngle(h, t) { return 1.15 * Math.sin(t * 2.1 + h.phase); }
-  sweepAngle(o, t) { return t * 1.7 + o.phase; }
+  hammerAngle(h, t) { return 1.15 * Math.sin(t * HAMMER_W + h.phase); }
+  sweepAngle(o, t) { return t * SWEEP_W + o.phase; }
 
   slowdown(p) {
     for (const o of this.obstacles) if (o.type === 'slime' && p >= o.p && p <= o.p + o.len) return 0.5;
@@ -373,39 +397,48 @@ export class Track {
       else if (o.type === 'boost') out.push({ type: 'pad', o });
       else if (o.type === 'slime') out.push({ type: 'slime', o });
     }
+    // пробежал молот/вертушку и не попался — «пронесло»
+    for (const o of this.obstacles) {
+      if ((o.type === 'hammer' || o.type === 'sweeper') && prev < o.p + 10 && now >= o.p + 10) out.push({ type: 'pass', o });
+    }
     return out;
   }
 
   // Столкновение тела бегуна с молотом или вертушкой — каждый кадр, по
   // настоящей геометрии. Координаты в системе препятствия: x = -lat (ось X
   // рамы смотрит против нормали трассы), z = -dz (вперёд по трассе — это -Z).
-  collide(p, lat, y, t) {
+  collide(p, lat, y, t, dt = 0.016) {
     for (const o of this.obstacles) {
       if (o.type !== 'hammer' && o.type !== 'sweeper') continue;
       const dz = (p - o.p) * this.K;
       if (Math.abs(dz) > 2.5) continue;
       const x = -lat, z = -dz;
       if (o.type === 'hammer') {
-        if (Math.abs(z) > 1.3 + 0.3) continue;
+        if (Math.abs(z) > 1.45 + 0.35) continue;
+        // проверяем и промежуточные положения маятника — при низком FPS
+        // голова за кадр пролетает больше собственного размера
         for (const h of o.hammers) {
-          const a = this.hammerAngle(h, t);
-          const hx = h.x + h.R * Math.sin(a), hy = h.H - h.R * Math.cos(a);
-          const cy = Math.min(Math.max(hy, y + 0.2), y + 2.4);   // ближайшая точка тела
-          if (Math.hypot(x - hx, cy - hy) < 1.2 + 0.45) {
-            // отбрасывает по ходу замаха
-            const swing = Math.cos(t * 2.1 + h.phase) * Math.cos(a);
-            return { by: 'hammer', o, vLat: (swing >= 0 ? -1 : 1) * 9, vFwd: 0 };
+          for (const k of [0, 0.33, 0.66, 1]) {
+            const tt = t - dt * k;
+            const a = this.hammerAngle(h, tt);
+            const hx = h.x + h.R * Math.sin(a), hy = h.H - h.R * Math.cos(a);
+            const cy = Math.min(Math.max(hy, y + 0.2), y + 2.4);   // ближайшая точка тела
+            if (Math.hypot(x - hx, cy - hy) < 1.45 + 0.45) {
+              const swing = Math.cos(tt * HAMMER_W + h.phase) * Math.cos(a);   // куда летит голова
+              return { by: 'hammer', o, vLat: (swing >= 0 ? -1 : 1) * 10, vFwd: 0 };
+            }
           }
         }
       } else {
         if (y > 1.3) continue;   // перепрыгнул
-        const th = this.sweepAngle(o, t);
-        const d = Math.abs(x * Math.sin(th) + z * Math.cos(th));
-        if (d < 0.4 + 0.35) {
-          // скорость точки перекладины: ω × r
-          const vx = 1.7 * z, vz = -1.7 * x;
+        // «непрерывная» проверка: перекладина задела, если между кадрами
+        // прошла через бегуна (знак расстояния сменился) или она совсем рядом
+        const dist = th => x * Math.sin(th) + z * Math.cos(th);
+        const d1 = dist(this.sweepAngle(o, t)), d0 = dist(this.sweepAngle(o, t - dt));
+        if (Math.abs(d1) < 0.4 + 0.45 || Math.sign(d1) !== Math.sign(d0)) {
+          const vx = SWEEP_W * z, vz = -SWEEP_W * x;   // скорость точки перекладины: ω × r
           const n = Math.hypot(vx, vz) || 1;
-          return { by: 'sweeper', o, vLat: -vx / n * 7, vFwd: -vz / n * 7 };
+          return { by: 'sweeper', o, vLat: -vx / n * 8, vFwd: -vz / n * 8 };
         }
       }
     }
@@ -419,7 +452,7 @@ export class Track {
       const dz = (p - o.p) * this.K;
       if (Math.abs(dz) > 3) continue;
       const th = this.sweepAngle(o, t + 0.22);
-      if (Math.abs(-lat * Math.sin(th) + -dz * Math.cos(th)) < 0.9) return o;
+      if (Math.abs(-lat * Math.sin(th) + -dz * Math.cos(th)) < 1.1) return o;
     }
     return null;
   }

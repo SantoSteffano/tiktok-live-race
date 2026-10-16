@@ -2,14 +2,14 @@
   "port": 8765,
 
   "race": {
-    "lobby_seconds": 20,
+    "lobby_seconds": 22,
     "results_seconds": 12,
-    "track_meters": 600,
-    "base_speed": 20,
+    "track_meters": 1200,
+    "base_speed": 22,
     "max_racers": 16,
     "bots_fill_to": 5,
     "max_speed_multiplier": 4.0,
-    "finish_grace_seconds": 6
+    "finish_grace_seconds": 8
   },
 
   "join": {

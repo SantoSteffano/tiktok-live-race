@@ -31,6 +31,8 @@ from aiohttp import WSMsgType, web
 HERE = Path(__file__).parent
 WEB = HERE / "web"
 DATA = HERE / "data"
+MUSIC = HERE / "music"
+MUSIC_EXT = {".mp3", ".ogg", ".m4a", ".wav", ".aac", ".opus"}
 
 log = logging.getLogger("tiktok_live_race")
 
@@ -361,6 +363,10 @@ def main() -> None:
         app.router.add_get("/ws", hub.handle_ws)
         app.router.add_get("/", lambda _: web.FileResponse(WEB / "index.html"))
         app.router.add_static("/web", WEB)
+        MUSIC.mkdir(exist_ok=True)
+        app.router.add_get("/music/list", lambda _: web.json_response(
+            sorted(f.name for f in MUSIC.iterdir() if f.suffix.lower() in MUSIC_EXT)))
+        app.router.add_static("/music", MUSIC)
 
         async def start(app_: web.Application):
             source = run_demo(mapper, hub) if args.demo else run_tiktok(args.tiktok, mapper, hub)

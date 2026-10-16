@@ -7,121 +7,130 @@
 <title>Гонка чата</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Russo+One&family=Rubik:wght@600;800&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Russo+One&family=Rubik:wght@600;800;900&display=swap" rel="stylesheet">
 <style>
   :root {
-    --pink: #ff2bd6;
-    --cyan: #20f0ff;
-    --gold: #ffd84d;
-    --red: #ff3b3b;
-    --ink: #07020f;
+    --ink: #1b1040;
+    --gold: #ffd23f;
+    --pink: #ff4fa3;
+    --cyan: #3ee8ff;
+    --lime: #7dff5a;
     --display: "Russo One", "Arial Black", Impact, sans-serif;
     --body: "Rubik", "Segoe UI", Arial, sans-serif;
+    --panel: linear-gradient(180deg, rgba(64, 32, 160, .88), rgba(36, 14, 100, .88));
   }
-  html, body { margin: 0; height: 100%; background: var(--ink); overflow: hidden; }
-  body { display: flex; align-items: center; justify-content: center; }
-
-  /* Сцена всегда 1080×1920 (вертикальный эфир) и масштабируется под окно */
-  #stage { position: relative; width: 1080px; height: 1920px; transform-origin: center; overflow: hidden;
-           background: var(--ink); flex: none; }
+  html, body { margin: 0; height: 100%; background: #6ec6ff; overflow: hidden; }
+  #stage { width: 1080px; height: 1920px; overflow: hidden; background: #8fd3ff; }
   #gl { position: absolute; inset: 0; width: 1080px; height: 1920px; display: block; }
-  #hud { position: absolute; inset: 0; pointer-events: none; color: #fff; font-family: var(--body); }
+  #hud { position: absolute; inset: 0; pointer-events: none; color: #fff; font-family: var(--body); font-weight: 800; }
 
-  .neon { font-family: var(--display); color: #fff; letter-spacing: 2px;
-          text-shadow: 0 0 8px var(--pink), 0 0 22px var(--pink), 0 0 42px var(--pink), 4px 4px 0 #000; }
+  /* «мультяшный» текст: толстая тёмная обводка + тень */
+  .toon { font-family: var(--display); color: #fff; paint-order: stroke fill;
+          -webkit-text-stroke: 12px var(--ink); text-shadow: 0 8px 0 var(--ink), 0 12px 18px rgba(0,0,0,.35); letter-spacing: 1px; }
+  .pill { background: var(--panel); border: 5px solid #fff; border-radius: 999px; box-shadow: 0 8px 0 var(--ink), 0 14px 24px rgba(0,0,0,.25); }
+  .card { background: var(--panel); border: 5px solid #fff; border-radius: 34px; box-shadow: 0 10px 0 var(--ink), 0 18px 30px rgba(0,0,0,.3); }
 
-  #title { position: absolute; top: 38px; left: 0; right: 0; text-align: center; font-size: 92px;
-           animation: flicker 4s infinite; }
-  #title b { color: var(--gold); text-shadow: 0 0 10px #ff8a00, 0 0 30px #ff8a00, 4px 4px 0 #000; font-weight: normal; }
-  @keyframes flicker { 0%, 92%, 100% { opacity: 1 } 93% { opacity: .4 } 95% { opacity: 1 } 97% { opacity: .6 } }
+  #title { position: absolute; top: 34px; left: 0; right: 0; text-align: center; font-size: 104px; line-height: 1;
+           animation: bob 2.4s ease-in-out infinite; }
+  #title b { color: var(--gold); font-weight: normal; }
+  @keyframes bob { 0%, 100% { transform: translateY(0) rotate(-1.5deg) } 50% { transform: translateY(-8px) rotate(1.5deg) } }
 
-  #phase { position: absolute; top: 160px; left: 0; right: 0; text-align: center; font-family: var(--display);
-           font-size: 50px; text-shadow: 0 0 14px var(--cyan), 3px 3px 0 #000; }
-  #ticker { position: absolute; top: 232px; left: 50%; transform: translateX(-50%); white-space: nowrap;
-            font-size: 36px; font-weight: 800; padding: 10px 30px; border-radius: 40px;
-            background: rgba(10, 0, 30, .72); border: 3px solid var(--pink); box-shadow: 0 0 24px var(--pink);
-            transition: opacity .3s; }
+  #phase { position: absolute; top: 158px; left: 50%; transform: translateX(-50%); white-space: nowrap;
+           padding: 10px 36px; font-family: var(--display); font-size: 46px; }
 
-  #legend { position: absolute; top: 236px; left: 34px; right: 34px; padding: 18px 24px; border-radius: 26px;
-            background: rgba(10, 0, 30, .74); border: 3px solid rgba(32, 240, 255, .7);
-            box-shadow: 0 0 30px rgba(32, 240, 255, .4); font-size: 26px; font-weight: 600;
-            display: grid; grid-template-columns: 1fr 1fr; column-gap: 18px;
-            transition: opacity .5s, transform .5s; }
+  /* мини-карта прогресса */
+  #map { position: absolute; top: 262px; left: 60px; right: 60px; height: 70px; transition: opacity .4s; }
+  #map .bar { position: absolute; left: 0; right: 60px; top: 28px; height: 16px; border-radius: 8px;
+              background: rgba(255,255,255,.75); border: 4px solid var(--ink); }
+  #map .flag { position: absolute; right: 0; top: 4px; font-size: 54px; }
+  #map .ob { position: absolute; top: 18px; font-size: 26px; transform: translateX(-50%); }
+  #map .dot { position: absolute; top: 14px; width: 40px; height: 40px; margin-left: -20px; border-radius: 50%;
+              border: 4px solid var(--ink); background: var(--c); color: var(--ink); font-size: 22px; line-height: 32px;
+              text-align: center; transition: left .25s linear; }
+  #map .dot.lead { width: 54px; height: 54px; margin-left: -27px; top: 6px; line-height: 46px; font-size: 28px; z-index: 5;
+                   box-shadow: 0 0 0 5px var(--gold); }
+
+  #ticker { position: absolute; top: 354px; left: 50%; transform: translateX(-50%); white-space: nowrap;
+            font-size: 36px; padding: 12px 34px; transition: opacity .3s; }
+
+  #legend { position: absolute; top: 262px; left: 36px; right: 36px; padding: 22px 28px; font-size: 27px;
+            display: grid; grid-template-columns: 1fr 1fr; column-gap: 18px; transition: opacity .5s, transform .5s; }
   #legend .row { display: flex; gap: 10px; align-items: center; margin: 5px 0; line-height: 1.15; }
-  #legend .row .ico { width: 38px; flex: none; text-align: center; font-size: 30px; }
+  #legend .row .ico { width: 40px; flex: none; text-align: center; font-size: 32px; }
   #legend .row.join, #legend .row.wide { grid-column: 1 / -1; }
-  #legend .row.join { color: var(--gold); font-weight: 800; font-size: 40px; justify-content: center; margin-bottom: 10px; }
-  #legend.hidden { opacity: 0; transform: translateY(-30px); }
+  #legend .row.join { font-family: var(--display); font-weight: normal; color: var(--gold); font-size: 46px;
+                      justify-content: center; margin-bottom: 10px; }
 
-  #standings { position: absolute; top: 330px; right: 24px; width: 380px; transition: opacity .4s; }
-  #standings .st { display: flex; align-items: center; gap: 12px; margin-bottom: 10px; padding: 8px 16px;
-                   border-radius: 18px; background: rgba(10, 0, 30, .7); font-size: 30px; font-weight: 800;
-                   border-left: 8px solid var(--c); transition: transform .3s; }
-  #standings .st .pos { font-family: var(--display); width: 44px; color: var(--gold); }
+  #standings { position: absolute; top: 450px; right: 24px; width: 360px; transition: opacity .4s; }
+  #standings .st { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; padding: 6px 18px 6px 8px;
+                   font-size: 30px; border-radius: 999px; background: var(--panel); border: 4px solid #fff;
+                   box-shadow: 0 6px 0 var(--ink); }
+  #standings .st .pos { font-family: var(--display); width: 46px; height: 46px; line-height: 46px; text-align: center;
+                        border-radius: 50%; background: var(--c); color: var(--ink); flex: none; }
+  #standings .st:first-child .pos { background: var(--gold); }
   #standings .st .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
 
   #tags { position: absolute; inset: 0; }
-  .tag { position: absolute; transform: translate(-50%, -100%); text-align: center; white-space: nowrap;
-         font-weight: 800; font-size: 30px; text-shadow: 0 0 6px #000, 2px 2px 0 #000, -2px -2px 0 #000; }
+  .tag { position: absolute; transform: translate(-50%, -100%); text-align: center; white-space: nowrap; font-size: 32px; }
   .tag .t { display: inline-block; font-size: 22px; padding: 2px 12px; border-radius: 12px; margin-bottom: 4px;
-            background: var(--tc); color: #000; text-shadow: none; }
-  .tag .n { display: block; color: var(--c); }
+            background: var(--tc); color: var(--ink); border: 3px solid var(--ink); }
+  .tag .n { display: block; color: #fff; paint-order: stroke fill; -webkit-text-stroke: 7px var(--ink); }
+  .tag .n i { font-style: normal; color: var(--c); paint-order: stroke fill; }
   .tag.lead .n::before { content: "👑 "; }
   .tag.stun .n::after { content: " 💫"; }
 
-  .pop { position: absolute; transform: translate(-50%, -50%); font-family: var(--display); font-size: 46px;
-         white-space: nowrap; animation: pop 1.3s ease-out forwards; text-shadow: 0 0 12px var(--c), 3px 3px 0 #000;
-         color: var(--c); }
-  .pop.emoji { font-size: 120px; text-shadow: 0 0 30px rgba(255,255,255,.7); animation-duration: 1.8s; }
-  @keyframes pop { 0% { opacity: 0; scale: .3 } 15% { opacity: 1; scale: 1.3 } 30% { scale: 1 }
-                   100% { opacity: 0; translate: 0 -160px } }
+  .pop { position: absolute; transform: translate(-50%, -50%); font-family: var(--display); font-size: 50px; white-space: nowrap;
+         animation: pop 1.3s ease-out forwards; color: var(--c); paint-order: stroke fill; -webkit-text-stroke: 9px var(--ink); }
+  @keyframes pop { 0% { opacity: 0; scale: .3 } 15% { opacity: 1; scale: 1.35 } 30% { scale: 1 } 100% { opacity: 0; translate: 0 -170px } }
 
-  #banner { position: absolute; top: 700px; left: 0; right: 0; text-align: center; font-size: 96px;
-            line-height: 1.05; padding: 0 30px; opacity: 0; }
+  #banner { position: absolute; top: 760px; left: 0; right: 0; text-align: center; font-size: 104px; line-height: 1.05;
+            padding: 0 30px; opacity: 0; }
   #banner.show { animation: banner 2.4s ease-out forwards; }
-  #banner small { display: block; font-size: 52px; color: var(--gold); text-shadow: 0 0 14px #ff8a00, 3px 3px 0 #000; }
-  @keyframes banner { 0% { opacity: 0; transform: scale(2.6) rotate(-6deg) } 12% { opacity: 1; transform: scale(.92) rotate(2deg) }
-                      20% { transform: scale(1.05) rotate(-1deg) } 80% { opacity: 1; transform: scale(1) }
+  #banner small { display: block; font-size: 56px; color: var(--gold); }
+  @keyframes banner { 0% { opacity: 0; transform: scale(2.8) rotate(-8deg) } 12% { opacity: 1; transform: scale(.9) rotate(3deg) }
+                      20% { transform: scale(1.06) rotate(-1deg) } 80% { opacity: 1; transform: scale(1) }
                       100% { opacity: 0; transform: scale(1.1) translateY(-60px) } }
 
-  #countdown { position: absolute; top: 760px; left: 0; right: 0; text-align: center; font-size: 380px; opacity: 0; }
+  #countdown { position: absolute; top: 720px; left: 0; right: 0; text-align: center; font-size: 400px; opacity: 0; color: var(--gold); }
   #countdown.show { animation: count .95s ease-out forwards; }
-  @keyframes count { 0% { opacity: 0; transform: scale(3) } 20% { opacity: 1; transform: scale(1) }
+  @keyframes count { 0% { opacity: 0; transform: scale(3) rotate(-15deg) } 20% { opacity: 1; transform: scale(1) rotate(0) }
                      100% { opacity: 0; transform: scale(.6) } }
 
-  #feed { transition: opacity .4s; position: absolute; left: 30px; right: 30px; bottom: 90px; display: flex; flex-direction: column-reverse; gap: 10px; }
-  #feed .f { align-self: flex-start; max-width: 100%; padding: 10px 22px; border-radius: 22px; font-size: 32px; font-weight: 800;
-             background: rgba(10, 0, 30, .72); border-left: 8px solid var(--c); animation: slide .35s ease-out;
-             white-space: nowrap; overflow: hidden; text-overflow: ellipsis; transition: opacity .6s; }
-  #feed .f.big { font-size: 40px; border: 3px solid var(--gold); box-shadow: 0 0 22px var(--gold); }
+  #feed { position: absolute; left: 30px; right: 30px; bottom: 80px; display: flex; flex-direction: column-reverse; gap: 12px;
+          transition: opacity .4s; }
+  #feed .f { align-self: flex-start; max-width: 100%; padding: 10px 26px 10px 18px; font-size: 32px;
+             border-radius: 999px; background: var(--panel); border: 4px solid #fff; box-shadow: 0 6px 0 var(--ink);
+             animation: slide .35s cubic-bezier(.2, 1.4, .4, 1); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+             transition: opacity .6s; }
+  #feed .f::before { content: ""; display: inline-block; width: 18px; height: 18px; border-radius: 50%; background: var(--c);
+                     margin-right: 12px; border: 3px solid var(--ink); vertical-align: -2px; }
+  #feed .f.big { font-size: 40px; background: linear-gradient(180deg, #ff7ab8, #c22a7a); }
   @keyframes slide { from { transform: translateX(-120%) } to { transform: none } }
 
-  #results { position: absolute; top: 1010px; left: 50px; right: 50px; padding: 30px 40px; border-radius: 36px;
-             background: rgba(10, 0, 30, .86); border: 4px solid var(--gold); box-shadow: 0 0 60px rgba(255, 216, 77, .5);
-             opacity: 0; transform: scale(.8); transition: opacity .5s, transform .5s; }
+  #results { position: absolute; top: 1010px; left: 50px; right: 50px; padding: 30px 40px;
+             opacity: 0; transform: scale(.8); transition: opacity .5s, transform .5s cubic-bezier(.2, 1.4, .4, 1); }
   #results.show { opacity: 1; transform: none; }
-  #results h2 { margin: 0 0 26px; text-align: center; font-size: 84px; font-weight: normal; }
-  #results .r { display: flex; align-items: center; gap: 22px; font-size: 48px; font-weight: 800; margin: 14px 0; }
+  #results h2 { margin: 0 0 18px; text-align: center; font-size: 88px; font-weight: normal; color: var(--gold); }
+  #results .r { display: flex; align-items: center; gap: 22px; font-size: 48px; margin: 12px 0; }
   #results .r .m { width: 80px; text-align: center; font-size: 60px; }
-  #results .r .nm { flex: 1; color: var(--c); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  #results .r .tm { color: #cfd6ff; font-size: 40px; }
-  #results .aura { text-align: center; margin-top: 26px; font-family: var(--display); font-size: 58px; color: #c58bff;
-                   text-shadow: 0 0 20px #a020ff, 3px 3px 0 #000; }
+  #results .r .nm { flex: 1; color: var(--c); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+                    paint-order: stroke fill; -webkit-text-stroke: 6px var(--ink); }
+  #results .r .tm { color: #e6e1ff; font-size: 40px; }
+  #results .aura { text-align: center; margin-top: 20px; font-family: var(--display); font-size: 56px; color: #e7b6ff; }
 
-  #auratop { position: absolute; bottom: 560px; left: 160px; right: 160px; padding: 18px 30px; border-radius: 26px;
-             background: rgba(30, 0, 50, .74); border: 3px solid #b44dff; box-shadow: 0 0 30px rgba(180, 77, 255, .5);
-             font-size: 32px; font-weight: 800; transition: opacity .5s; }
-  #auratop h3 { margin: 0 0 10px; font-family: var(--display); font-weight: normal; font-size: 40px; color: #e2b8ff; text-align: center; }
+  #auratop { position: absolute; top: 262px; left: 120px; right: 120px; padding: 22px 34px; font-size: 34px; transition: opacity .5s; }
+  #auratop h3 { margin: 0 0 8px; font-family: var(--display); font-weight: normal; font-size: 42px; color: #f0c6ff; text-align: center; }
   #auratop .a { display: flex; justify-content: space-between; margin: 6px 0; }
-  #auratop .a span:last-child { color: #e2b8ff; }
+  #auratop .a span:last-child { color: #f0c6ff; }
 
   #flash { position: absolute; inset: 0; background: #fff; opacity: 0; }
   #flash.go { animation: flash .6s ease-out; }
   @keyframes flash { 0% { opacity: var(--fa, .9) } 100% { opacity: 0 } }
 
-  #status { position: absolute; bottom: 24px; left: 0; right: 0; text-align: center; font-size: 24px; opacity: .55; }
-  #hint { position: absolute; bottom: 480px; left: 50%; transform: translateX(-50%); padding: 18px 34px; border-radius: 30px;
-          background: var(--pink); font-size: 34px; font-weight: 800; display: none; pointer-events: auto; cursor: pointer; }
+  #status { position: absolute; bottom: 22px; left: 0; right: 0; text-align: center; font-size: 24px; opacity: .7;
+            text-shadow: 0 2px 0 var(--ink); }
+  #hint { position: absolute; bottom: 470px; left: 50%; transform: translateX(-50%); padding: 18px 34px; font-size: 34px;
+          display: none; pointer-events: auto; cursor: pointer; background: var(--pink); }
   .hidden { opacity: 0 !important; }
 </style>
 <script type="importmap">
@@ -133,19 +142,20 @@
   <canvas id="gl"></canvas>
   <div id="hud">
     <div id="tags"></div>
-    <div id="title" class="neon">ГОНКА <b>ЧАТА</b></div>
-    <div id="phase">Подключение…</div>
-    <div id="ticker"></div>
-    <div id="legend"></div>
+    <div id="title" class="toon">ГОНКА <b>ЧАТА</b></div>
+    <div id="phase" class="pill">Подключение…</div>
+    <div id="map"><div class="bar"></div><div class="flag">🏁</div></div>
+    <div id="ticker" class="pill"></div>
+    <div id="legend" class="card"></div>
     <div id="standings"></div>
-    <div id="auratop"></div>
-    <div id="results"></div>
-    <div id="banner" class="neon"></div>
-    <div id="countdown" class="neon"></div>
+    <div id="auratop" class="card"></div>
+    <div id="results" class="card"></div>
+    <div id="banner" class="toon"></div>
+    <div id="countdown" class="toon"></div>
     <div id="feed"></div>
     <div id="flash"></div>
     <div id="status"></div>
-    <div id="hint">🔊 Нажми, чтобы включить звук</div>
+    <div id="hint" class="pill">🔊 Нажми, чтобы включить звук</div>
   </div>
 </div>
 <script type="module" src="/web/game.js"></script>

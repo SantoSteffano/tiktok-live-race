@@ -27,10 +27,11 @@ const LAYOUT = [
 ];
 
 export class Track {
-  constructor({ meters, K, roadW, low }) {
+  constructor({ meters, K, roadW, lanes, low }) {
     this.L = meters;
     this.K = K;
     this.roadW = roadW;
+    this.lanes = lanes;
     this.low = low;
     this.group = new THREE.Group();
     this.obstacles = [];
@@ -129,7 +130,7 @@ export class Track {
 
   buildRoad() {
     const W = this.roadW, from = -60, to = this.L + 80;
-    const lanes = Math.round((W - 1.5) / 1.15);
+    const lanes = this.lanes;
     const roadTex = canvasTex(256, 256, (g, w, h) => {
       g.fillStyle = '#b9a8ff'; g.fillRect(0, 0, w, h / 2);
       g.fillStyle = '#a593ff'; g.fillRect(0, h / 2, w, h / 2);
@@ -289,7 +290,8 @@ export class Track {
         const beam = shadow(new THREE.Mesh(new THREE.BoxGeometry(W + 3, 0.9, 0.9), mat(0x5b4bff)));
         beam.position.y = H;
         root.add(beam);
-        o.hammers = [-6, 0, 6].map((x, i) => {
+        // четыре маятника поперёк всей ширины дороги
+        o.hammers = [-0.33, -0.11, 0.11, 0.33].map(f => f * W).map((x, i) => {
           const pivot = new THREE.Group();
           pivot.position.set(x, H, 0);
           const R = 7.6;

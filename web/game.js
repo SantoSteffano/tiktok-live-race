@@ -182,14 +182,14 @@ function shockwave(pos, color = 0x3ee8ff, size = 6, life = 0.7) {
 
 // ---------------- трасса ----------------
 let L = 1200, MAX = 16;
-const K = 0.25, LANE = 1.15;
+const K = 0.25, LANE = 1.6;
 let track = null, director = null;
 const PODIUM = [{ x: 0, h: 2.2 }, { x: -2.8, h: 1.5 }, { x: 2.8, h: 1.0 }];
 const podiumP = () => L + 26;
 
 function buildWorld() {
   const roadW = MAX * LANE + 1.5;
-  track = new Track({ meters: L, K, roadW, low: LOW });
+  track = new Track({ meters: L, K, roadW, lanes: MAX, low: LOW });
   scene.add(track.group);
   director = new Director(camera, track);
   // пьедестал за финишем
@@ -377,6 +377,7 @@ function refreshTag(r) {
 }
 
 function removeRacer(r) {
+  r.removed = true;
   scene.remove(r.body.root, r.body.blob);
   r.tag.remove();
   racers = racers.filter(x => x !== r);
@@ -594,7 +595,7 @@ function strikeLeader(sender, seconds) {
   stun(target, seconds);
   flash(0.45);
   director.shake = Math.max(director.shake, 0.8);
-  director.event(performance.now() / 1000, target, 2.6);
+  director.event(performance.now() / 1000, target, 2.6, `⚡ ${short(sender.name, 12)} → ${short(target.name, 12)}`);
   slowMo(0.45, 0.9);
   sfx('lightning', 0.2);
   pushFeed(`⚡ ${short(sender.name)} ударил молнией ${short(target.name)}!`, '#60e8ff', true);
@@ -613,7 +614,7 @@ function nuke(sender, effect) {
   sender.jumpTotal = sender.jumpLeft;
   flash(0.9);
   director.shake = 1.6;
-  director.event(performance.now() / 1000, sender, 3);
+  director.event(performance.now() / 1000, sender, 3, `☢️ ${short(sender.name, 16)} — ЯДЕРКА`);
   slowMo(0.35, 1.2);
   sfx('nuke', 0.5);
   sound.redrop(true);
@@ -716,6 +717,12 @@ function onEffect(user, effect, count, extra) {
     const target = phase === 'lobby' ? addPlayer(user) : queueUser(user);
     if (target.pending.length < 20) target.pending.push([effect, count, extra]);
     if (r && phase === 'lobby') floatEmoji('⚡', headPos(r), { size: 1 });
+  }
+  // камера показывает того, кто подарил / подписался / репостнул
+  const shown = racers.find(x => x.id === user.id);
+  if (extra.source !== 'like' && shown && shown.place === null && shown.landed && effect.kind !== 'lightning' && effect.kind !== 'nuke') {
+    const weight = extra.source === 'gift' ? Math.max(2, extra.diamonds || 1) : extra.source === 'follow' ? 8 : 5;
+    director.focus(performance.now() / 1000, shown, weight, 2.8, `📺 ${short(user.name, 14)} — ${effect.label.split(' (')[0]}`);
   }
   if (extra.source !== 'like') {
     const big = effect.kind === 'lightning' || effect.kind === 'nuke' || (extra.diamonds || 0) >= 10;
@@ -1102,6 +1109,14 @@ function animate(dt, real) {
   const leader = racers.length ? racers.reduce((a, b) => (b.p > a.p ? b : a)) : null;
   const packP = racers.length ? racers.reduce((s, r) => s + r.p, 0) / racers.length : 0;
   director.update(dt, real, { phase, leader, packP });
+  const cap = director.caption;
+  const fe = $('#focus');
+  if (fe.dataset.text !== cap) {
+    fe.dataset.text = cap;
+    fe.textContent = cap;
+    fe.classList.toggle('show', !!cap);
+    if (cap) { fe.classList.remove('pulse'); void fe.offsetWidth; fe.classList.add('pulse'); }
+  }
   // солнце и тени следуют за камерой
   const focus = director.look;
   sun.position.copy(focus).add(V(40, 80, 30));

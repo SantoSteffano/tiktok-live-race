@@ -123,6 +123,13 @@
   #auratop .a { display: flex; justify-content: space-between; margin: 6px 0; }
   #auratop .a span:last-child { color: #f0c6ff; }
 
+  #focus { position: absolute; bottom: 430px; left: 50%; transform: translateX(-50%) scale(.6); white-space: nowrap;
+           max-width: 980px; overflow: hidden; text-overflow: ellipsis; padding: 14px 36px; font-family: var(--display);
+           font-size: 44px; font-weight: normal; background: linear-gradient(180deg, #ffcf3f, #ff8a1a); color: var(--ink);
+           opacity: 0; transition: opacity .25s, transform .25s cubic-bezier(.2, 1.6, .4, 1); }
+  #focus.show { opacity: 1; transform: translateX(-50%) scale(1); }
+  #focus.pulse { animation: focuspulse .5s ease-out; }
+  @keyframes focuspulse { 0% { filter: brightness(1.8) } 100% { filter: none } }
   #flash { position: absolute; inset: 0; background: #fff; opacity: 0; }
   #flash.go { animation: flash .6s ease-out; }
   @keyframes flash { 0% { opacity: var(--fa, .9) } 100% { opacity: 0 } }
@@ -150,6 +157,7 @@
     <div id="standings"></div>
     <div id="auratop" class="card"></div>
     <div id="results" class="card"></div>
+    <div id="focus" class="pill"></div>
     <div id="banner" class="toon"></div>
     <div id="countdown" class="toon"></div>
     <div id="feed"></div>

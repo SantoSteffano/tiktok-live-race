@@ -36,6 +36,7 @@ export class Track {
     this.group = new THREE.Group();
     this.obstacles = [];
     this.labels = [];
+    this.occluders = [];   // то, что может закрыть камеру — делаем прозрачным
     this.buildCurve();
     this.buildRoad();
     this.buildArches();
@@ -168,7 +169,7 @@ export class Track {
     for (let i = 0; i < trees; i++) {
       const p = -40 + rnd() * (this.L + 120);
       const side = rnd() < 0.5 ? -1 : 1;
-      const at = this.point(p, side * (W / 2 + 16 + rnd() * 50), 0);   // коридор у трассы — для камеры
+      const at = this.point(p, side * (W / 2 + 26 + rnd() * 50), 0);   // коридор у трассы — для камеры
       const sc = 0.7 + rnd() * 1.1;
       m4.compose(at.clone().setY(-1.2 + 1.2 * sc), q, new THREE.Vector3(sc, sc, sc));
       trunk.setMatrixAt(i, m4);
@@ -236,6 +237,7 @@ export class Track {
         new THREE.MeshStandardMaterial({ color: colors[i % colors.length], roughness: 0.4 }));
       piece.rotation.z = i * Math.PI / segs;
       piece.castShadow = !this.low;
+      this.occluders.push(piece);
       g.add(piece);
     }
     if (label) {
@@ -269,7 +271,7 @@ export class Track {
       return t;
     };
     const mat = (c, extra = {}) => new THREE.MeshStandardMaterial({ color: c, roughness: 0.45, ...extra });
-    const shadow = m => { m.castShadow = !this.low; return m; };
+    const shadow = m => { m.castShadow = !this.low; this.occluders.push(m); return m; };
 
     for (const [frac, type] of LAYOUT) {
       const p = frac * this.L;
@@ -300,6 +302,7 @@ export class Track {
           const head = shadow(new THREE.Mesh(new THREE.CylinderGeometry(1.2, 1.2, 2.6, 16), mat(0xffffff, { map: stripes('#ff3b4e', '#ffffff') })));
           head.rotation.x = Math.PI / 2;
           head.position.y = -R;
+          this.occluders.push(rod);
           pivot.add(rod, head);
           root.add(pivot);
           return { pivot, x, R, H, phase: i * 1.7 };

@@ -16,6 +16,7 @@
     "any_comment": true,
     "keywords": ["го", "go", "+", "я", "join"]
   },
+  "roblox_skins": true,
 
   "effects": {
     "like":   {"kind": "boost",   "multiplier": 1.15, "seconds": 1.0, "label": "❤️ лайк"},

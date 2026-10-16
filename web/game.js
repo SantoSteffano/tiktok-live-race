@@ -8,6 +8,7 @@ import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { Sound } from './audio.js';
 import { Track } from './track.js';
 import { Director } from './director.js';
+import { drawFace, EMOTE_MOOD } from './faces.js';
 
 const W = 1080, H = 1920;
 const params = new URLSearchParams(location.search);
@@ -213,23 +214,21 @@ const faceCache = new Map();
 function faceTex(skin, mood) {
   const key = skin + mood;
   if (faceCache.has(key)) return faceCache.get(key);
-  const t = canvasTex(64, 64, (g) => {
-    g.fillStyle = skin; g.fillRect(0, 0, 64, 64);
-    g.fillStyle = '#111';
-    if (mood === 'cool') {
-      g.fillRect(8, 20, 48, 6); g.fillRect(10, 22, 18, 12); g.fillRect(36, 22, 18, 12); g.fillRect(22, 46, 20, 4);
-    } else if (mood === 'stun') {
-      g.lineWidth = 4; g.strokeStyle = '#111';
-      for (const cx of [20, 44]) { g.beginPath(); g.moveTo(cx - 6, 20); g.lineTo(cx + 6, 32); g.moveTo(cx + 6, 20); g.lineTo(cx - 6, 32); g.stroke(); }
-      g.beginPath(); g.arc(32, 50, 6, 0, Math.PI * 2); g.fill();
-    } else {
-      g.fillRect(16, 22, 8, 10); g.fillRect(40, 22, 8, 10);
-      if (mood === 'happy') { g.beginPath(); g.arc(32, 42, 12, 0, Math.PI); g.fill(); } else g.fillRect(22, 46, 20, 4);
-    }
-  });
-  t.magFilter = THREE.NearestFilter;
+  const t = canvasTex(128, 128, (g) => drawFace(g, mood, skin));
   faceCache.set(key, t);
   return t;
+}
+
+// принт на футболке: полоска, сердце, звезда, номер, «SIGMA», «GIGA»…
+function shirtTex(base, kind, text) {
+  return canvasTex(64, 64, (g) => {
+    g.fillStyle = base; g.fillRect(0, 0, 64, 64);
+    g.fillStyle = 'rgba(255,255,255,.85)';
+    if (kind === 0) { g.fillRect(0, 26, 64, 10); }
+    else if (kind === 1) { g.font = '34px "Segoe UI Emoji","Apple Color Emoji","Noto Color Emoji"'; g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillText(['❤️', '⭐', '🔥', '💀', '🗿'][hash(text) % 5], 32, 34); }
+    else { g.font = '900 26px "Russo One", Impact, sans-serif'; g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillText(text, 32, 34); }
+    g.fillStyle = 'rgba(0,0,0,.18)'; g.fillRect(0, 0, 64, 6);   // воротник
+  });
 }
 
 const boxGeo = new THREE.BoxGeometry(1, 1, 1);
@@ -247,70 +246,92 @@ const blobTex = canvasTex(64, 64, (g) => {
 });
 const blobGeo = new THREE.PlaneGeometry(1.8, 1.8).rotateX(-Math.PI / 2);
 const blobMat = new THREE.MeshBasicMaterial({ map: blobTex, transparent: true, depthWrite: false });
+const shoeMat = new THREE.MeshStandardMaterial({ color: 0xf4f4f8, roughness: 0.5 });
+const soleMat = new THREE.MeshStandardMaterial({ color: 0x26203a, roughness: 0.8 });
 
-function makeBody(id, bot) {
+function makeBody(id, name, bot) {
   const h = hash(id);
-  const shirt = new THREE.Color().setHSL(hueOf(id) / 360, bot ? 0.08 : 0.85, bot ? 0.55 : 0.55);
+  const shirt = new THREE.Color().setHSL(hueOf(id) / 360, bot ? 0.06 : 0.85, bot ? 0.62 : 0.56);
   const skin = SKINS[h % SKINS.length];
+  const shirtCss = '#' + shirt.getHexString();
   const shirtMat = new THREE.MeshStandardMaterial({ color: shirt, roughness: 0.6 });
-  const pantsMat = new THREE.MeshStandardMaterial({ color: shirt.clone().multiplyScalar(0.4), roughness: 0.8 });
+  const printMat = new THREE.MeshStandardMaterial({ map: shirtTex(shirtCss, bot ? 2 : h % 4, bot ? 'NPC' : ['', '', String(h % 99), 'SIGMA'][h % 4] || String(h % 99)), roughness: 0.6 });
+  const pantsMat = new THREE.MeshStandardMaterial({ color: new THREE.Color().setHSL(((hueOf(id) + 200) % 360) / 360, 0.5, 0.28), roughness: 0.8 });
   const skinMat = new THREE.MeshStandardMaterial({ color: skin, roughness: 0.7 });
-  const hairMat = new THREE.MeshStandardMaterial({ color: ['#1a1a1a', '#5a3214', '#e8c15a', '#ff4dd2', '#3dd6ff'][h % 5] });
+  const hairMat = new THREE.MeshStandardMaterial({ color: ['#1a1a1a', '#5a3214', '#e8c15a', '#ff4dd2', '#3dd6ff', '#f2f2f2'][h % 6], roughness: 0.6 });
   const faceMat = new THREE.MeshStandardMaterial({ map: faceTex(skin, 'normal'), roughness: 0.7 });
   const root = new THREE.Group();
   const body = new THREE.Group();
   root.add(body);
-  part(shirtMat, 0.9, 1.0, 0.5, 0, 1.45, 0, body);
-  const head = new THREE.Mesh(boxGeo, [skinMat, skinMat, hairMat, skinMat, skinMat, faceMat]);
-  head.scale.set(0.78, 0.78, 0.78); head.position.set(0, 2.36, 0); head.castShadow = !LOW;
+  // торс: принт спереди (−Z), ремень
+  const torso = new THREE.Mesh(boxGeo, [shirtMat, shirtMat, shirtMat, shirtMat, shirtMat, printMat]);
+  torso.scale.set(0.92, 1.0, 0.52); torso.position.set(0, 1.45, 0); torso.castShadow = !LOW;
+  body.add(torso);
+  part(soleMat, 0.94, 0.1, 0.54, 0, 0.98, 0, body);
+  // голова чуть крупнее — «чиби»
+  const head = new THREE.Mesh(boxGeo, [skinMat, skinMat, hairMat, skinMat, hairMat, faceMat]);
+  head.scale.set(0.9, 0.9, 0.9); head.position.set(0, 2.42, 0); head.castShadow = !LOW;
   body.add(head);
-  const limb = (mat, x, y, len, w) => {
+  // причёска
+  const hair = new THREE.Group();
+  head.add(hair);
+  const style = (h >> 3) % 4;
+  if (style === 0) part(hairMat, 1.06, 0.22, 1.06, 0, 0.56, 0.02, hair);                       // ёжик
+  else if (style === 1) for (let i = 0; i < 4; i++) {                                          // шипы
+    const c = new THREE.Mesh(new THREE.ConeGeometry(0.16, 0.42, 4), hairMat);
+    c.position.set(-0.3 + i * 0.2, 0.68, 0.05); c.rotation.z = (i - 1.5) * 0.2; hair.add(c);
+  } else if (style === 2) { part(hairMat, 1.06, 0.2, 1.06, 0, 0.56, 0, hair); part(hairMat, 1.06, 0.7, 0.18, 0, 0.18, 0.5, hair); } // длинные
+  const limb = (mat, x, y, len, w, end, endMat) => {
     const pivot = new THREE.Group(); pivot.position.set(x, y, 0);
     part(mat, w, len, w, 0, -len / 2, 0, pivot);
+    if (end) part(endMat, ...end, pivot);
     body.add(pivot);
     return pivot;
   };
-  const armL = limb(shirtMat, -0.62, 1.92, 0.95, 0.3), armR = limb(shirtMat, 0.62, 1.92, 0.95, 0.3);
-  const legL = limb(pantsMat, -0.23, 0.95, 0.95, 0.38), legR = limb(pantsMat, 0.23, 0.95, 0.95, 0.38);
-  root.scale.setScalar(0.85);
+  const armL = limb(shirtMat, -0.64, 1.92, 0.8, 0.3, [0.28, 0.26, 0.28, 0, -0.93, 0], skinMat);
+  const armR = limb(shirtMat, 0.64, 1.92, 0.8, 0.3, [0.28, 0.26, 0.28, 0, -0.93, 0], skinMat);
+  const legL = limb(pantsMat, -0.24, 0.95, 0.82, 0.38, [0.42, 0.2, 0.6, 0, -0.9, -0.08], shoeMat);
+  const legR = limb(pantsMat, 0.24, 0.95, 0.82, 0.38, [0.42, 0.2, 0.6, 0, -0.9, -0.08], shoeMat);
+  root.scale.setScalar(0.88);
   const auraSprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: softTex, color: 0xb44dff, transparent: true, depthWrite: false, opacity: 0 }));
   auraSprite.scale.set(4, 5, 1); auraSprite.position.y = 1.6;
   body.add(auraSprite);
   const acc = new THREE.Group();
   head.add(acc);
   const blob = new THREE.Mesh(blobGeo, blobMat);
-  return { root, body, head, armL, armR, legL, legR, faceMat, skin, acc, auraSprite, blob, mood: 'normal' };
+  return { root, body, head, hair, armL, armR, legL, legR, faceMat, printMat, shirtMat, pantsMat, skinMat, hairMat,
+    skin, acc, auraSprite, blob, mood: 'normal' };
 }
 
 const gold = new THREE.MeshStandardMaterial({ color: 0xffd23f, emissive: 0x7a5200, metalness: 0.8, roughness: 0.25 });
+const BASE_MOOD = ['npc', 'normal', 'smug', 'gigachad', 'cool', 'gigachad'];
 function setAccessory(r) {
   const acc = r.body.acc;
   acc.clear();
   const h = hash(r.id);
   if (r.champion) {
     const crown = new THREE.Mesh(new THREE.CylinderGeometry(0.42, 0.42, 0.3, 8, 1, true), gold);
-    crown.position.y = 0.66; acc.add(crown);
+    crown.position.y = 0.72; acc.add(crown);
     for (let i = 0; i < 5; i++) {
       const spike = new THREE.Mesh(new THREE.ConeGeometry(0.1, 0.3, 4), gold);
       const a = i / 5 * Math.PI * 2;
-      spike.position.set(Math.cos(a) * 0.38, 0.92, Math.sin(a) * 0.38); acc.add(spike);
+      spike.position.set(Math.cos(a) * 0.38, 0.98, Math.sin(a) * 0.38); acc.add(spike);
     }
-  } else if (h % 3 === 1 && !r.bot) {
+  } else if (h % 4 === 1 && !r.bot && !r.skinData) {
     const cap = new THREE.MeshStandardMaterial({ color: new THREE.Color().setHSL(((hueOf(r.id) + 180) % 360) / 360, 0.9, 0.5) });
-    part(cap, 1.04, 0.28, 1.04, 0, 0.58, 0, acc); part(cap, 1.04, 0.08, 0.5, 0, 0.46, -0.7, acc);
-  } else if (h % 3 === 2 && !r.bot) {
+    part(cap, 1.08, 0.26, 1.08, 0, 0.62, 0, acc); part(cap, 1.08, 0.08, 0.5, 0, 0.5, -0.74, acc);
+  } else if (h % 4 === 2 && !r.bot) {
     const horn = new THREE.MeshStandardMaterial({ color: 0xff3b3b, emissive: 0x500000 });
     for (const s of [-1, 1]) {
       const c = new THREE.Mesh(new THREE.ConeGeometry(0.12, 0.45, 8), horn);
-      c.position.set(s * 0.3, 0.7, 0); c.rotation.z = -s * 0.35; acc.add(c);
+      c.position.set(s * 0.32, 0.76, 0); c.rotation.z = -s * 0.35; acc.add(c);
     }
   }
   if (r.tier >= 3) {
     const halo = new THREE.Mesh(new THREE.TorusGeometry(0.42, 0.07, 8, 32), new THREE.MeshBasicMaterial({ color: 0xffe866 }));
-    halo.rotation.x = Math.PI / 2; halo.position.y = 1.05; acc.add(halo);
+    halo.rotation.x = Math.PI / 2; halo.position.y = 1.12; acc.add(halo);
   }
-  r.baseMood = r.tier >= 2 ? 'cool' : 'normal';   // с «сигмы» — в очках
-  if (r.body.mood === 'normal' || r.body.mood === 'cool') setMood(r, r.baseMood);
+  r.baseMood = r.skinFace ? 'roblox' : r.bot ? 'npc' : BASE_MOOD[clamp(r.tier, 0, 5)];
   const am = r.body.auraSprite.material;
   am.opacity = r.tier >= 4 ? 0.8 : 0;
   am.color.set(r.tier >= 5 ? 0xffd23f : 0xb44dff);
@@ -319,8 +340,89 @@ function setAccessory(r) {
 function setMood(r, mood) {
   if (r.body.mood === mood) return;
   r.body.mood = mood;
-  r.body.faceMat.map = faceTex(r.body.skin, mood);
+  r.body.faceMat.map = mood === 'roblox' && r.skinFace ? r.skinFace : faceTex(r.body.skin, mood === 'roblox' ? 'normal' : mood);
   r.body.faceMat.needsUpdate = true;
+}
+
+// какое лицо сейчас: удар > мем из чата > ситуация в гонке > «своё»
+function pickMood(r, lastId) {
+  if (r.stunUntil > clock) return 'stun';
+  if (r.emote && r.emote.until > clock) return r.emote.mood;
+  if (phase === 'results') return r.podium === 0 ? 'hype' : r.podium !== undefined ? 'happy' : 'cry';
+  if (phase === 'race' && r.place === null) {
+    if (r.jumpLeft > 0) return 'scream';
+    if (r.air) return 'hype';
+    if (r.boosts.some(b => b.mult >= 1.5)) return 'hype';
+    if (track.slowdown(r.p) < 1) return 'cursed';
+    if (r.id === lastId && clock - raceStart > 8) return 'cry';
+    if (r.id === leaderId && !r.skinFace) return r.tier >= 3 ? 'gigachad' : 'smug';
+  }
+  if (r.place === 1) return 'cool';
+  return r.baseMood;
+}
+
+// ---------------- Roblox-скины ----------------
+// Сервер по нику находит аватар игрока; здесь снимаем с рендера цвета кожи,
+// одежды и волос, а портрет кладём на лицо кубика.
+const skinCache = new Map();
+function loadImg(src) {
+  return new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = rej; i.src = src; });
+}
+function regionColor(img, x0, y0, x1, y1) {
+  const c = document.createElement('canvas');
+  c.width = img.width; c.height = img.height;
+  const g = c.getContext('2d');
+  g.drawImage(img, 0, 0);
+  const d = g.getImageData(Math.floor(x0 * c.width), Math.floor(y0 * c.height), Math.max(1, Math.floor((x1 - x0) * c.width)), Math.max(1, Math.floor((y1 - y0) * c.height))).data;
+  const rs = [], gs = [], bs = [];
+  for (let i = 0; i < d.length; i += 16) if (d[i + 3] > 200) { rs.push(d[i]); gs.push(d[i + 1]); bs.push(d[i + 2]); }
+  if (!rs.length) return null;
+  const med = a => a.sort((x, y) => x - y)[a.length >> 1];
+  return new THREE.Color(`rgb(${med(rs)},${med(gs)},${med(bs)})`);
+}
+function cropTex(img, x0, y0, x1, y1, w = 128, h = 128) {
+  return canvasTex(w, h, (g) => g.drawImage(img, x0 * img.width, y0 * img.height, (x1 - x0) * img.width, (y1 - y0) * img.height, 0, 0, w, h));
+}
+async function prepareSkin(skin) {
+  if (skinCache.has(skin.id)) return skinCache.get(skin.id);
+  const job = (async () => {
+    const [body, head] = await Promise.all([loadImg(skin.body), loadImg(skin.head)]);
+    const col = skin.colors || {};
+    const hex = c => (c ? new THREE.Color('#' + String(c).replace('#', '')) : null);
+    return {
+      face: cropTex(head, 0.18, 0.12, 0.82, 0.88),
+      print: cropTex(body, 0.37, 0.33, 0.63, 0.56, 64, 64),
+      shirt: regionColor(body, 0.40, 0.36, 0.60, 0.52),
+      arms: regionColor(body, 0.27, 0.36, 0.35, 0.50) || regionColor(body, 0.40, 0.36, 0.60, 0.52),
+      pants: regionColor(body, 0.40, 0.62, 0.60, 0.84),
+      skin: hex(col.headColor3) || regionColor(head, 0.45, 0.70, 0.55, 0.80),
+      hair: regionColor(head, 0.35, 0.06, 0.65, 0.18),
+    };
+  })();
+  skinCache.set(skin.id, job);
+  return job;
+}
+async function applySkin(r, skin) {
+  if (!skin || r.skinData?.id === skin.id) return;
+  r.skinData = skin;
+  try {
+    const s = await prepareSkin(skin);
+    if (r.removed) return;
+    const b = r.body;
+    if (s.shirt) b.shirtMat.color.copy(s.shirt);
+    if (s.arms) b.shirtMat.color.copy(s.arms);
+    b.printMat.map = s.print; b.printMat.color.set(0xffffff); b.printMat.needsUpdate = true;
+    if (s.pants) b.pantsMat.color.copy(s.pants);
+    if (s.skin) b.skinMat.color.copy(s.skin);
+    if (s.hair) b.hairMat.color.copy(s.hair);
+    b.hair.visible = false;   // причёска уже на портрете
+    r.skinFace = s.face;
+    setAccessory(r);
+    b.mood = '';
+    setMood(r, r.baseMood);
+  } catch (e) {
+    console.warn('не удалось загрузить скин', skin.name, e);
+  }
 }
 
 // ---------------- состояние игры ----------------
@@ -356,9 +458,10 @@ function newRacer(user, bot = false) {
   };
   r.tier = tierOf(r.aura);
   r.champion = r.id === championId;
-  r.body = makeBody(r.id, bot);
+  r.body = makeBody(r.id, r.name, bot);
   setAccessory(r);
   scene.add(r.body.root, r.body.blob);
+  if (user.skin) applySkin(r, user.skin);
   const tag = document.createElement('div');
   tag.className = 'tag';
   tag.innerHTML = '<span class="t"></span><span class="n"></span>';
@@ -372,7 +475,8 @@ function newRacer(user, bot = false) {
 const TIER_COLORS = ['#c9cbd8', '#7dff5a', '#3ee8ff', '#ff4fa3', '#c58bff', '#ffd23f'];
 function refreshTag(r) {
   r.tag.querySelector('.n').textContent = short(r.name);
-  r.tag.querySelector('.t').textContent = r.bot ? 'NPC' : `${r.title} · ${r.aura}✨`;
+  // титул над ником — только у тех, кому есть чем похвастаться
+  r.tag.querySelector('.t').textContent = !r.bot && (r.tier >= 2 || r.tag.classList.contains('lead')) ? `${r.title} · ${r.aura}✨` : '';
   r.tag.style.setProperty('--tc', TIER_COLORS[clamp(r.tier, 0, 5)]);
 }
 
@@ -549,7 +653,7 @@ function apply(r, effect, count, extra = {}) {
   } else if (effect.kind === 'jetpack') {
     r.jumpLeft = Math.min(r.jumpLeft + effect.meters * count, L * 0.2);
     r.jumpTotal = r.jumpLeft;
-    pop('🚀 ДЖЕТПАК', headPos(r), '#3ee8ff');
+    pop(pickMeme(JET_MEMES), headPos(r), '#3ee8ff');
     sfx('jetpack', 0.3);
     shockwave(worldPos(r), 0x3ee8ff, 5);
   } else if (effect.kind === 'lightning') {
@@ -628,6 +732,13 @@ function slowMo(scale, seconds) {
 
 // препятствия
 let lastHitFeed = 0;
+// мем-подписи, которые всплывают над бегунами
+const HIT_MEMES = ['💥 −1000 АУРЫ', '💀 БОНК', '💥 ЭТО ЖЁСТКО', '💀 NPC ПОВЕДЕНИЕ', '💥 ОТЛЕТЕЛ', '😭 НЕ ПОВЕЗЛО'];
+const SWEEP_MEMES = ['🌀 СНЕСЛО', '💀 −1000 АУРЫ', '🌀 ВЖУХ', '😭 ЗА ЧТО'];
+const LEAD_MEMES = ['🗿 +1000 АУРЫ', '🗿 СИГМА ВПЕРЕДИ', '😎 ИЗИ', '🔥 ОН ГОТОВИЛСЯ'];
+const JET_MEMES = ['🚀 ВЗЛЁТ', '🚀 ДО ЛУНЫ', '🚀 ПОКА-ПОКА'];
+const pickMeme = list => list[(Math.random() * list.length) | 0];
+
 const KNOCK_TIME = 0.75;
 function onHit(r, hit) {
   window.raceDebug.hits++;
@@ -638,7 +749,7 @@ function onHit(r, hit) {
   setMood(r, 'stun');
   burst(worldPos(r, 1.5), 0xffffff, 22, 8);
   shockwave(worldPos(r, 1.2), 0xff4fa3, 3, 0.4);
-  pop(hit.by === 'hammer' ? '💥 БОНК' : '🌀 СНЕСЛО', headPos(r), '#ff4fa3');
+  pop(pickMeme(hit.by === 'hammer' ? HIT_MEMES : SWEEP_MEMES), headPos(r), '#ff4fa3');
   sfx('bonk', 0.08);
   if (r.id === leaderId && clock - lastHitFeed > 3) {
     lastHitFeed = clock;
@@ -675,6 +786,7 @@ function updateUser(user) {
       }
     }
     refreshTag(r);
+    if (user.skin) applySkin(r, user.skin);
   }
   const q = queue.get(user.id);
   if (q) q.user = user;
@@ -722,15 +834,10 @@ function onEffect(user, effect, count, extra) {
   const shown = racers.find(x => x.id === user.id);
   if (extra.source !== 'like' && shown && shown.place === null && shown.landed && effect.kind !== 'lightning' && effect.kind !== 'nuke') {
     const weight = extra.source === 'gift' ? Math.max(2, extra.diamonds || 1) : extra.source === 'follow' ? 8 : 5;
-    director.focus(performance.now() / 1000, shown, weight, 2.8, `📺 ${short(user.name, 14)} — ${effect.label.split(' (')[0]}`);
+    director.focus(performance.now() / 1000, shown, weight, 2.8);
   }
-  if (extra.source !== 'like') {
-    const big = effect.kind === 'lightning' || effect.kind === 'nuke' || (extra.diamonds || 0) >= 10;
-    pushFeed(`${short(user.name, 16)}: ${effect.label}`, cssColor(user.id), big);
-    if ((extra.diamonds || 0) >= 30 && effect.kind !== 'nuke') {
-      banner(effect.label.split(' (')[0], short(user.name, 18) + (phase === 'race' ? '' : ' · после старта'));
-    }
-  }
+  if (extra.source !== 'like') showGift(user, effect, count, extra);
+
 }
 
 function onEmote(user, emoji) {
@@ -738,6 +845,7 @@ function onEmote(user, emoji) {
   const r = racers.find(x => x.id === user.id);
   if (r) {
     floatEmoji(emoji, headPos(r).add(V(0, 0.8, 0)), { size: 2.2, life: 1.8, vy: 1.2 });
+    r.emote = { mood: EMOTE_MOOD[emoji] || 'hype', until: clock + 2.5 };   // лицо тоже меняется
     if (emoji === '🗿' || emoji === '💀') sfx('boom', 0.8);
   }
 }
@@ -780,8 +888,52 @@ function connect() {
     else if (m.type === 'effect') onEffect(m.user, m.effect, m.count || 1, { source: m.source, diamonds: m.diamonds });
     else if (m.type === 'emote') onEmote(m.user, m.emoji);
     else if (m.type === 'user') updateUser(m.user);
+    else if (m.type === 'skin') {
+      updateUser(m.user);
+      pushFeed(`🎮 ${short(m.user.name, 14)} теперь в скине ${m.user.skin.name}`, cssColor(m.user.id), true);
+    }
   };
   ws.onclose = () => { status = 'нет связи с сервером'; setTimeout(connect, 2000); };
+}
+
+// ---------------- подарки на экране ----------------
+// Каждый подарок / подписка / репост — крупная карточка вверху: кто, что,
+// что даёт. Плюс «топ даритель» эфира.
+const giftQueue = [];
+let giftUntil = 0;
+const gifters = new Map();   // id → {name, d}
+function showGift(user, effect, count, extra) {
+  const [fx, rest] = effect.label.split(' (');
+  const what = extra.source === 'gift' ? (rest || '').replace(/\)$/, '') + (extra.diamonds ? ` · ${extra.diamonds}💎` : '')
+    : extra.source === 'follow' ? 'подписался!' : extra.source === 'share' ? 'сделал репост!' : '';
+  const big = (extra.diamonds || 0) >= 30 || effect.kind === 'lightning' || effect.kind === 'nuke';
+  const item = { name: user.name, id: user.id, ico: [...fx][0] || '🎁', what, fx: fx.replace(/^\S+\s*/, '') + (phase === 'race' ? '' : ' · на старте'), big };
+  if (big) giftQueue.unshift(item); else giftQueue.push(item);
+  if (giftQueue.length > 4) giftQueue.length = 4;   // при потоке подарков — только свежие
+  if (extra.source === 'gift' && extra.diamonds) {
+    const g = gifters.get(user.id) || { name: user.name, d: 0 };
+    g.d += extra.diamonds; g.name = user.name;
+    gifters.set(user.id, g);
+    const top = [...gifters.values()].sort((a, b) => b.d - a.d)[0];
+    $('#topgift').innerHTML = '';
+    $('#topgift').append('👑 ТОП ДАРИТЕЛЬ', Object.assign(document.createElement('b'), { textContent: `${short(top.name, 14)} · ${top.d}💎` }));
+  }
+}
+function pumpGift() {
+  const t = performance.now();
+  const el = $('#gift');
+  if (t < giftUntil) return;
+  if (!giftQueue.length) { el.classList.remove('show'); return; }
+  const g = giftQueue.shift();
+  el.querySelector('.ico').textContent = g.ico;
+  el.querySelector('.who').textContent = short(g.name, 16);
+  el.querySelector('.who').style.color = cssColor(g.id);
+  el.querySelector('.what').textContent = g.what;
+  el.querySelector('.fx').textContent = g.fx;
+  el.classList.toggle('big', g.big);
+  el.classList.remove('show'); void el.offsetWidth; el.classList.add('show');
+  if (g.big) sfx('win', 1.5);
+  giftUntil = t + (g.big ? 3200 : giftQueue.length > 1 ? 1500 : 2300);
 }
 
 // ---------------- HUD ----------------
@@ -875,6 +1027,8 @@ function updateHud(real) {
   else if (phase === 'race') line = `ЗАБЕГ #${round} · ${Math.min(99, Math.round(Math.max(0, ...racers.map(r => r.p)) / L * 100))}%`;
   else if (phase === 'results') line = `Новый забег через ${left}с`;
   $('#phase').textContent = line;
+  $('#hud').classList.toggle('racing', phase === 'race');
+  pumpGift();
   $('#status').textContent = status;
 
   const lobby = phase === 'lobby';
@@ -1023,12 +1177,13 @@ function update(dt) {
   if (lead && lead.id !== leaderId) {
     if (leaderId && clock - raceStart > 3 && clock - leadChangeAt > 2.5 && lead.place === null) {
       floatEmoji('🗿', headPos(lead).add(V(0, 0.6, 0)), { size: 1.8, life: 1.4, vy: 1 });
+      pop(pickMeme(LEAD_MEMES), headPos(lead).add(V(0, 1.2, 0)), '#ffd23f');
       pushFeed(`🗿 ${short(lead.name)} вырвался вперёд!`, cssColor(lead.id));
       sfx('boom', 1.5);
     }
     leaderId = lead.id;
     leadChangeAt = clock;
-    for (const r of racers) r.tag.classList.toggle('lead', r === lead);
+    for (const r of racers) { r.tag.classList.toggle('lead', r === lead); refreshTag(r); }
   }
   if (!finalStretch && lead && lead.p > L * 0.85) {
     finalStretch = true;
@@ -1044,6 +1199,9 @@ function update(dt) {
 // ---------------- анимация и камера ----------------
 function animate(dt, real) {
   track.update(clock);
+  const running = racers.filter(x => x.place === null);
+  const lastId = phase === 'race' && running.length > 3 ? running.reduce((a, b) => (b.p < a.p ? b : a)).id : null;
+  for (const r of racers) setMood(r, pickMood(r, lastId));
   for (const r of racers) {
     const b = r.body, root = b.root;
     if (phase === 'results' && r.podium !== undefined) {
@@ -1144,6 +1302,7 @@ function animate(dt, real) {
     bo.m.material.opacity = clamp(bo.life * 3, 0, 1);
     if (bo.life <= 0) { scene.remove(bo.m); bo.m.geometry.dispose(); bo.m.material.dispose(); bolts.splice(i, 1); }
   }
+  fadeOccluders(dt);
   for (const s of track.labels) {
     const wp = s.getWorldPosition(proj.clone());
     s.material.opacity = clamp((camera.position.distanceTo(wp) - 12) / 14, 0, 1);
@@ -1164,6 +1323,38 @@ function animate(dt, real) {
       r.tag.style.zIndex = String(1000 - Math.round(dist));
       r.tag.classList.toggle('stun', r.stunUntil > clock);
     }
+  }
+}
+
+// Всё, что стоит между камерой и тем, на что она смотрит (арки, молоты,
+// вертушки), становится полупрозрачным — обзор не перекрывается.
+const camRay = new THREE.Raycaster();
+const toLook = V(), side3 = V();
+const occBox = new THREE.Box3();
+function fadeOccluders(dt) {
+  const hits = new Set();
+  const look = director.look;
+  side3.subVectors(look, camera.position).cross(V(0, 1, 0)).normalize().multiplyScalar(3);
+  for (const off of [0, 1, -1]) {
+    toLook.copy(look).addScaledVector(side3, off).sub(camera.position);
+    const dist = toLook.length();
+    camRay.set(camera.position, toLook.normalize());
+    camRay.far = Math.max(0.1, dist - 1);
+    for (const h of camRay.intersectObjects(track.occluders, false)) hits.add(h.object);
+  }
+  // и всё, что почти вплотную к камере (опоры арок по краям кадра)
+  for (const m of track.occluders) {
+    occBox.setFromObject(m);
+    if (occBox.distanceToPoint(camera.position) < 4) hits.add(m);
+  }
+  const k = Math.min(1, dt * 10);
+  for (const m of track.occluders) {
+    const mat = m.material, want = hits.has(m) ? 0.15 : 1;
+    if (mat.opacity === want && (want === 1) === !mat.transparent) continue;
+    mat.transparent = true;
+    mat.opacity += (want - mat.opacity) * k;
+    if (want === 1 && mat.opacity > 0.98) { mat.opacity = 1; mat.transparent = false; }
+    mat.depthWrite = mat.opacity > 0.6;
   }
 }
 
@@ -1191,7 +1382,7 @@ fit();
 connect();
 requestAnimationFrame(frame);
 
-window.raceDebug = { sound, hits: 0, get phase() { return phase; } };   // для отладки из консоли
+window.raceDebug = { sound, hits: 0, get phase() { return phase; }, get racers() { return racers; }, get director() { return director; } };   // для отладки из консоли
 sound.start();
 const hint = $('#hint');
 setTimeout(() => { if (!sound.started && !sound.muted && !params.has('nohint')) hint.style.display = 'block'; }, 800);

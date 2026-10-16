@@ -26,6 +26,7 @@ import random
 import re
 from pathlib import Path
 
+import aiohttp
 from aiohttp import WSMsgType, web
 
 HERE = Path(__file__).parent
@@ -33,6 +34,8 @@ WEB = HERE / "web"
 DATA = HERE / "data"
 MUSIC = HERE / "music"
 MUSIC_EXT = {".mp3", ".ogg", ".m4a", ".wav", ".aac", ".opus"}
+ROBLOX_DIR = DATA / "roblox"
+ROBLOX_NAME = re.compile(r"^[A-Za-z0-9_]{4,20}$")
 
 log = logging.getLogger("tiktok_live_race")
 
@@ -63,10 +66,16 @@ class Aura:
                 title = name
         return title
 
+    skins: "RobloxSkins | None" = None
+
     def user(self, uid: str, name: str) -> dict:
         entry = self.users.setdefault(uid, {"name": name, "aura": 0})
         entry["name"] = name
-        return {"id": uid, "name": name, "aura": entry["aura"], "title": self.title(entry["aura"])}
+        user = {"id": uid, "name": name, "aura": entry["aura"], "title": self.title(entry["aura"])}
+        skin = self.skins.of(uid) if self.skins else None
+        if skin:
+            user["skin"] = skin
+        return user
 
     def add(self, uid: str, name: str, points: int) -> dict:
         entry = self.users.setdefault(uid, {"name": name, "aura": 0})
@@ -88,6 +97,101 @@ class Aura:
                 tmp = self.path.with_suffix(".tmp")
                 tmp.write_text(json.dumps(self.users, ensure_ascii=False), encoding="utf-8")
                 tmp.replace(self.path)
+
+
+class RobloxSkins:
+    """Скины Roblox: зритель пишет в чат свой ник — находим аватар через
+    публичное API Roblox, сохраняем рендер и портрет и запоминаем, кто в чьём
+    скине. Картинки отдаются игре с нашего же сервера (/roblox/…)."""
+
+    API_USERS = "https://users.roblox.com/v1/usernames/users"
+    API_THUMB = "https://thumbnails.roblox.com/v1/users/{kind}?userIds={id}&size={size}&format=Png&isCircular=false"
+    API_AVATAR = "https://avatar.roblox.com/v2/avatar/users/{id}/avatar"
+
+    def __init__(self, folder: Path):
+        self.folder = folder
+        folder.mkdir(parents=True, exist_ok=True)
+        self.index_path = folder / "skins.json"
+        self.by_user: dict[str, dict] = {}
+        try:
+            self.by_user = json.loads(self.index_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            pass
+        self.by_name: dict[str, dict | None] = {}   # ник → скин (None — такого нет)
+        self.tried: dict[str, float] = {}            # зритель → когда последний раз искали
+        self.limit = asyncio.Semaphore(2)
+        self.session: aiohttp.ClientSession | None = None
+
+    def of(self, uid: str) -> dict | None:
+        return self.by_user.get(uid)
+
+    async def http(self) -> aiohttp.ClientSession:
+        if self.session is None or self.session.closed:
+            self.session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15),
+                                                 headers={"User-Agent": "tiktok-live-race"})
+        return self.session
+
+    async def thumb(self, kind: str, rid: int, size: str) -> bytes | None:
+        http = await self.http()
+        for _ in range(4):   # рендер может быть ещё «Pending»
+            async with http.get(self.API_THUMB.format(kind=kind, id=rid, size=size)) as resp:
+                data = (await resp.json()).get("data") or []
+            if data and data[0].get("state") == "Completed" and data[0].get("imageUrl"):
+                async with http.get(data[0]["imageUrl"]) as img:
+                    return await img.read()
+            await asyncio.sleep(1.5)
+        return None
+
+    async def lookup(self, name: str) -> dict | None:
+        key = name.lower()
+        if key in self.by_name:
+            return self.by_name[key]
+        async with self.limit:
+            http = await self.http()
+            async with http.post(self.API_USERS, json={"usernames": [name], "excludeBannedUsers": True}) as resp:
+                found = (await resp.json()).get("data") or []
+            if not found:
+                self.by_name[key] = None
+                return None
+            rid, real_name = found[0]["id"], found[0]["name"]
+            body = await self.thumb("avatar", rid, "420x420")
+            head = await self.thumb("avatar-headshot", rid, "150x150")
+            if not body or not head:
+                return None
+            (self.folder / f"{rid}_body.png").write_bytes(body)
+            (self.folder / f"{rid}_head.png").write_bytes(head)
+            colors = {}
+            try:
+                async with http.get(self.API_AVATAR.format(id=rid)) as resp:
+                    colors = (await resp.json()).get("bodyColor3s") or {}
+            except (aiohttp.ClientError, ValueError):
+                pass
+            skin = {"id": rid, "name": real_name, "body": f"/roblox/{rid}_body.png",
+                    "head": f"/roblox/{rid}_head.png", "colors": colors}
+            self.by_name[key] = skin
+            return skin
+
+    async def assign(self, uid: str, name: str) -> dict | None:
+        """Найти скин по нику и закрепить за зрителем. None — не нашли."""
+        now = asyncio.get_running_loop().time()
+        current = self.by_user.get(uid)
+        if current and current["name"].lower() == name.lower():
+            return None
+        if now - self.tried.get(uid, -999) < 20:   # не чаще раза в 20 с от одного зрителя
+            return None
+        self.tried[uid] = now
+        try:
+            skin = await self.lookup(name)
+        except (aiohttp.ClientError, asyncio.TimeoutError, ValueError, KeyError) as ex:
+            log.warning("Roblox: не удалось найти %s: %s", name, ex)
+            return None
+        if not skin:
+            return None
+        self.by_user[uid] = skin
+        tmp = self.index_path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(self.by_user, ensure_ascii=False), encoding="utf-8")
+        tmp.replace(self.index_path)
+        return skin
 
 
 class Hub:
@@ -168,7 +272,25 @@ class EventMapper:
                 return self.word_emotes[word]
         return None
 
+    def roblox_name(self, text: str) -> str | None:
+        """Сообщение из одного латинского слова похоже на ник Roblox."""
+        word = text.strip().lstrip("@")
+        if not ROBLOX_NAME.match(word):
+            return None
+        low = word.lower()
+        skip = {k.lower() for k in self.config["join"].get("keywords", [])} | set(self.word_emotes)
+        return None if low in skip else word
+
+    async def skin_for(self, uid: str, name: str, roblox: str) -> None:
+        skin = await self.aura.skins.assign(uid, roblox)
+        if skin:
+            log.info("скин Roblox %s → %s", skin["name"], name)
+            await self.hub.broadcast({"type": "skin", "user": self.aura.user(uid, name)})
+
     async def comment(self, uid: str, name: str, text: str) -> None:
+        roblox = self.roblox_name(text) if self.config.get("roblox_skins", True) and self.aura.skins else None
+        if roblox:
+            asyncio.create_task(self.skin_for(uid, name, roblox))
         user = self.aura.user(uid, name)
         if self.wants_to_join(text):
             await self.hub.broadcast({"type": "join", "user": user})
@@ -307,7 +429,7 @@ DEMO_NAMES = [
     "Бабушка_Зина", "Артём", "ShadowFox", "Вика", "Илья", "КРАШ", "lola",
     "Серёжа", "minecraft_king", "Аня", "Олег", "sasha_k", "Дед_Инсайд",
 ]
-DEMO_COMMENTS = ["го", "+", "я", "го го го", "🗿", "сигма", "💀", "скибиди", "67", "аура",
+DEMO_COMMENTS = ["Builderman", "Roblox", "го", "+", "я", "го го го", "🗿", "сигма", "💀", "скибиди", "67", "аура",
                  "имба", "ахах", "gg", "😎", "🤡", "кто выиграет?", "давай!"]
 DEMO_GIFTS = [("Rose", 1), ("TikTok", 1), ("Finger Heart", 5), ("Doughnut", 30),
               ("Hat and Mustache", 99), ("Galaxy", 1000)]
@@ -356,6 +478,7 @@ def main() -> None:
 
     async def build_app() -> web.Application:
         aura = Aura(config, DATA / "aura.json")
+        aura.skins = RobloxSkins(ROBLOX_DIR)
         hub = Hub(config, aura)
         mapper = EventMapper(config, hub)
 
@@ -367,6 +490,7 @@ def main() -> None:
         app.router.add_get("/music/list", lambda _: web.json_response(
             sorted(f.name for f in MUSIC.iterdir() if f.suffix.lower() in MUSIC_EXT)))
         app.router.add_static("/music", MUSIC)
+        app.router.add_static("/roblox", ROBLOX_DIR)
 
         async def start(app_: web.Application):
             source = run_demo(mapper, hub) if args.demo else run_tiktok(args.tiktok, mapper, hub)

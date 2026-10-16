@@ -17,13 +17,14 @@ export class Director {
     this.look = V();
     this.fov = 55;
     this.cut = true;
+    this.first = true;
     this.override = null;   // крупный план зрителя: {target, until, weight, caption}
     this.focusQueue = [];
     this.cooldownUntil = 0;
     this.usedObstacles = new Set();
     this.shake = 0;
     this.fovKick = 0;
-    this.rotation = ['front', 'chase', 'side', 'front', 'drone', 'low', 'front', 'chaseHigh'];
+    this.rotation = ['front', 'chase', 'side', 'front', 'drone', 'chaseHigh'];
     this.rotIdx = 0;
   }
 
@@ -38,8 +39,10 @@ export class Director {
 
   // Показать зрителя, который что-то сделал (подарок, подписка, молния…).
   // Дорогое перебивает дешёвое, остальное ждёт в короткой очереди.
-  focus(real, target, weight, dur = 2.8, caption = '') {
-    const item = { target, weight, dur, caption, at: real };
+  focus(real, target, weight, dur = 2.8, caption = '', shot = 'focus') {
+    // на финише камера занята героями — обычные показы дарителей не мешают
+    if (this.finishLock && shot === 'focus' && weight < 1000) return;
+    const item = { target, weight, dur, caption, at: real, shot };
     const cur = this.override;
     // между показами — пару секунд общего плана (дорогое и молнии — без очереди)
     const busy = (cur && cur.until > real && cur.weight >= weight) || (!cur && weight < 30 && real < this.cooldownUntil);
@@ -58,7 +61,7 @@ export class Director {
   event(real, target, dur = 2.6, caption = '') { this.focus(real, target, 1000, dur, caption); }
 
   startFocus(real, item) {
-    this.override = { target: item.target, until: real + item.dur, weight: item.weight, caption: item.caption };
+    this.override = { target: item.target, until: real + item.dur, weight: item.weight, caption: item.caption, shot: item.shot || 'focus', dur: item.dur };
     this.side = Math.random() < 0.5 ? -1 : 1;
     this.focusStart = real;
     this.cut = true;
@@ -70,6 +73,7 @@ export class Director {
     this.usedObstacles.clear();
     this.override = null;
     this.focusQueue = [];
+    this.finishLock = false;
     this.rotIdx = 0;
   }
 
@@ -79,7 +83,7 @@ export class Director {
     if (this.override && (this.override.until <= real || this.override.target.removed || s.phase === 'results')) {
       this.override = null;
       this.cut = true;
-      this.cooldownUntil = real + 2.5;
+      this.cooldownUntil = real + 5;
     }
     // следующий из очереди, если он ещё свежий и общий план уже показали
     if (!this.override && s.phase !== 'results' && this.focusQueue.length) {
@@ -92,13 +96,19 @@ export class Director {
     if (s.phase === 'lobby') {
       if (!this.shot.startsWith('lobby')) this.setShot('lobbyFly', real, 9);
       else if (real > this.shotUntil) this.setShot(this.shot === 'lobbyFly' ? 'lobbyCrowd' : 'lobbyFly', real, this.shot === 'lobbyFly' ? 11 : 9);
-      name = this.override ? 'focus' : this.shot;
+      name = this.override ? this.override.shot : this.shot;
     } else if (s.phase === 'results') {
       if (this.shot !== 'podium') this.setShot('podium', real, 999);
       name = 'podium';
     } else if (s.phase === 'race' && s.leader) {
       const lp = s.leader.p;
-      if (this.override) name = 'focus';
+      const lock = lp > tr.L - 110;
+      if (lock && !this.finishLock) {
+        this.focusQueue = this.focusQueue.filter(q => q.shot !== 'focus');
+        if (this.override && this.override.shot === 'focus' && this.override.weight < 1000) this.override.until = real;
+      }
+      this.finishLock = lock;
+      if (this.override) name = this.override.shot;
       else if (lp > tr.L - 110) {
         if (this.shot !== 'finish') this.setShot('finish', real, 999);
         name = 'finish';
@@ -107,10 +117,10 @@ export class Director {
         // лидер подбегает к препятствию — в 60% случаев режем на «засаду»
         if (ob && ob.p - lp < 50 && ob.p - lp > 8 && !this.usedObstacles.has(ob)) {
           this.usedObstacles.add(ob);
-          if (ob.type !== 'boost' && ob.type !== 'ramp' && Math.random() < 0.7) this.setShot('obstacle', real, 4.2, { o: ob });
+          if (ob.type !== 'boost' && ob.type !== 'ramp' && Math.random() < 0.4) this.setShot('obstacle', real, 5, { o: ob });
         }
         if (real > this.shotUntil || this.shot.startsWith('lobby') || this.shot === 'podium') {
-          this.setShot(this.rotation[this.rotIdx++ % this.rotation.length], real, rand(4.5, 7));
+          this.setShot(this.rotation[this.rotIdx++ % this.rotation.length], real, rand(7, 10));
         }
         name = this.shot;
       }
@@ -121,7 +131,7 @@ export class Director {
     let pos, look, fov = 55;
     const lead = s.leader;
     const packP = s.packP ?? 0;
-    if (!lead && !['lobbyFly', 'lobbyCrowd', 'podium', 'finish', 'obstacle', 'focus'].includes(name)) name = 'lobbyCrowd';
+    if (!lead && !['lobbyFly', 'lobbyCrowd', 'podium', 'finish', 'obstacle', 'focus', 'hero'].includes(name)) name = 'lobbyCrowd';
     const W = tr.roadW;
     const M = 1 / tr.K;   // мировая единица → метры трассы
     switch (name) {
@@ -189,6 +199,21 @@ export class Director {
         fov = 50;
         break;
       }
+      case 'hero': {   // «аура-камера» на финише: низкий облёт вокруг героя с наездом
+        const r = this.override.target;
+        const k = Math.min(1, (real - this.focusStart) / this.override.dur);
+        const big = this.override.weight >= 2000;
+        const sm = tr.sample(r.p);
+        const a = this.side * (big ? -1.2 + k * 2.6 : -0.6 + k * 1.2);       // угол облёта
+        const dist = big ? 14 - k * 5 : 12;
+        const c = tr.point(r.p, r.lat, r.y || 0);
+        const fwd = sm.tan.clone().multiplyScalar(-1);   // смотрим ему в лицо
+        pos = c.clone().addScaledVector(sm.tan, dist * Math.cos(a)).addScaledVector(sm.nor, dist * Math.sin(a));
+        pos.y = c.y + (big ? 2.2 + k * 1.5 : 3.5);
+        look = c.clone().setY(c.y + 1.8).addScaledVector(fwd, 0.5);
+        fov = big ? 46 - k * 10 : 44;
+        break;
+      }
       case 'finish':
         pos = tr.point(tr.L + 10 * M, this.side * 7, 4.5);
         look = tr.point(tr.L - 8 * M, 0, 1.2);
@@ -212,15 +237,14 @@ export class Director {
     // ручная «живость» и плавность внутри плана, склейка — мгновенно
     pos.x += Math.sin(real * 0.7) * 0.25;
     pos.y += Math.sin(real * 0.9) * 0.2;
-    if (this.cut) {
-      this.pos.copy(pos); this.look.copy(look); this.fov = fov;
-      this.cut = false;
-    } else {
-      const k = 1 - Math.exp(-dt * 4);
-      this.pos.lerp(pos, k);
-      this.look.lerp(look, k);
-      this.fov += (fov - this.fov) * k;
-    }
+    // смена плана — плавный перелёт ~1 с, внутри плана — мягкое следование
+    if (this.cut) { this.glideStart = real; this.cut = false; }
+    if (this.first) { this.pos.copy(pos); this.look.copy(look); this.fov = fov; this.first = false; }
+    const gliding = real - (this.glideStart || 0) < 1.2;
+    const k = 1 - Math.exp(-dt * (gliding ? 2.6 : 3.5));
+    this.pos.lerp(pos, k);
+    this.look.lerp(look, 1 - Math.exp(-dt * (gliding ? 3.2 : 5)));
+    this.fov += (fov - this.fov) * k;
     const cam = this.camera;
     cam.position.copy(this.pos);
     if (this.shake > 0) {

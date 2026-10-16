@@ -166,6 +166,7 @@
           transition: transform .35s cubic-bezier(.2, 1.6, .4, 1), opacity .25s; }
   #gift.show { transform: none; opacity: 1; }
   #hud:not(.racing) #gift { top: 1180px; }   /* в лобби — под бегунами, не на правилах */
+  #hud.results #gift { top: 230px; }
   #gift.big { background: linear-gradient(135deg, #ffd23f, #ff5a1a); box-shadow: 0 10px 0 var(--ink), 0 0 80px rgba(255, 210, 63, .95); }
   #gift .ico { font-size: 116px; line-height: 1; animation: wob .5s ease-in-out infinite alternate; flex: none; }
   @keyframes wob { from { transform: rotate(-12deg) scale(1) } to { transform: rotate(12deg) scale(1.15) } }
@@ -185,6 +186,11 @@
   #banner { top: 760px; font-size: 90px; }
   #banner.show { animation-duration: 2s; }
   #focus { display: none; }
+  /* золотая аура по краям экрана в момент победы */
+  #aurafx { position: absolute; inset: 0; opacity: 0;
+            background: radial-gradient(ellipse at center, rgba(255,210,63,0) 45%, rgba(255,190,40,.55) 85%, rgba(255,160,20,.85) 100%); }
+  #aurafx.show { animation: aurafx 2.8s ease-out; }
+  @keyframes aurafx { 0% { opacity: 0 } 10% { opacity: 1 } 60% { opacity: .8 } 100% { opacity: 0 } }
 </style>
 <script type="importmap">
   { "imports": { "three": "/web/vendor/three.module.min.js", "three/addons/": "/web/vendor/addons/" } }
@@ -209,6 +215,7 @@
     <div id="banner" class="toon"></div>
     <div id="countdown" class="toon"></div>
     <div id="feed"></div>
+    <div id="aurafx"></div>
     <div id="flash"></div>
     <div id="status"></div>
     <div id="hint" class="pill">🔊 Нажми, чтобы включить звук</div>

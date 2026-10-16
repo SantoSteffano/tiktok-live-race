@@ -4,12 +4,13 @@
   "race": {
     "lobby_seconds": 22,
     "results_seconds": 12,
-    "track_meters": 1200,
-    "base_speed": 22,
+    "track_meters": 1500,
+    "base_speed": 20,
     "max_racers": 16,
     "bots_fill_to": 5,
     "max_speed_multiplier": 4.0,
-    "finish_grace_seconds": 8
+    "finish_grace_seconds": 8,
+    "min_race_seconds": 60
   },
 
   "join": {

@@ -195,13 +195,13 @@ function buildWorld() {
   director = new Director(camera, track);
   // пьедестал за финишем
   const g = new THREE.Group();
-  const mat = new THREE.MeshStandardMaterial({ color: 0x8a5cff, roughness: 0.4 });
   PODIUM.forEach(({ x, h }, i) => {
-    const b = new THREE.Mesh(new THREE.BoxGeometry(2.6, h, 2.6), mat);
+    const b = new THREE.Mesh(new THREE.BoxGeometry(2.6, h, 2.6), new THREE.MeshStandardMaterial({ color: 0x8a5cff, roughness: 0.4 }));
     b.position.set(x, h / 2, 0); b.castShadow = b.receiveShadow = !LOW;
     const top = new THREE.Mesh(new THREE.BoxGeometry(2.7, 0.14, 2.7), new THREE.MeshStandardMaterial({ color: [0xffd23f, 0xdfe6ff, 0xff9a4d][i] }));
     top.position.set(x, h, 0);
     g.add(b, top);
+    track.occluders.push(b, top);
   });
   track.orient(g, podiumP());
   g.rotation.y += Math.PI;
@@ -348,7 +348,7 @@ function setMood(r, mood) {
 function pickMood(r, lastId) {
   if (r.stunUntil > clock) return 'stun';
   if (r.emote && r.emote.until > clock) return r.emote.mood;
-  if (phase === 'results') return r.podium === 0 ? 'hype' : r.podium !== undefined ? 'happy' : 'cry';
+  if (phase === 'results') return r.podium === 0 ? 'hype' : r.podium !== undefined ? 'happy' : r.lying ? r.lying.face : 'cry';
   if (phase === 'race' && r.place === null) {
     if (r.jumpLeft > 0) return 'scream';
     if (r.air) return 'hype';
@@ -430,7 +430,7 @@ let CFG = null, RACE = null;
 let phase = 'wait', phaseEnd = 0;
 let clock = 0, timeScale = 1, slowUntil = 0;
 let raceStart = 0, firstFinish = null, finishedCount = 0, round = 0;
-let botsAdded = false, finalStretch = false;
+let botsAdded = false, finalStretch = false, heroShown = false;
 let leaderId = null, leadChangeAt = 0;
 let racers = [];
 const queue = new Map();
@@ -554,7 +554,7 @@ function startRace() {
     r.jumpTotal = r.jumpLeft;
   }
   phase = 'race';
-  raceStart = clock; firstFinish = null; finishedCount = 0; leaderId = null;
+  raceStart = clock; firstFinish = null; finishedCount = 0; leaderId = null; heroShown = false;
   director.resetRace();
   sound.setLevel(1);
   sound.drop();
@@ -575,6 +575,12 @@ function endRace() {
     send({ type: 'win', id: winner.id, name: winner.name });
   }
   results.slice(0, 3).forEach((r, i) => { r.podium = i; r.dance = true; setMood(r, i === 0 ? 'cool' : 'happy'); });
+  // остальные — поверженные лежат на фоне
+  results.slice(3).forEach((r, i) => {
+    // вокруг пьедестала по бокам — чтобы камера на результатах их видела
+    const side = i % 2 ? 1 : -1, row = Math.floor(i / 2);
+    r.lying = { p: podiumP() + 10 + (row % 4) * 8 + rand(-2, 2), lat: side * (1.5 + (row % 3) * 2 + rand(0, 1)), yaw: rand(0, Math.PI * 2), face: i % 2 ? 'stun' : 'cry' };
+  });
   for (const r of racers) { r.champion = r.id === championId; setAccessory(r); }
   phase = 'results';
   phaseEnd = clock + RACE.results_seconds;
@@ -730,6 +736,44 @@ function slowMo(scale, seconds) {
   slowUntil = Math.max(slowUntil, performance.now() / 1000 + seconds);
 }
 
+// ---------------- финиш ----------------
+const beams = [];
+function auraBeam(r, color, alpha = 0.5, life = 3.5) {
+  const m = new THREE.Mesh(new THREE.CylinderGeometry(0.7, 1.3, 40, 24, 1, true),
+    new THREE.MeshBasicMaterial({ color, transparent: true, opacity: alpha, depthWrite: false, side: THREE.DoubleSide, fog: false }));
+  scene.add(m);
+  beams.push({ m, r, life, max: life, alpha, color });
+}
+
+// победитель: столб света, золотые волны, искры, золотая подсветка экрана
+function winnerAura(r) {
+  const pos = worldPos(r);
+  auraBeam(r, 0xffc21a, 0.32, 4.5);
+  director.focus(performance.now() / 1000, r, 3001, 2.6, '', 'hero');   // камера — на настоящего победителя
+  for (let i = 0; i < 3; i++) setTimeout(() => shockwave(worldPos(r), 0xffd23f, 10 + i * 6, 0.9), i * 180);
+  burst(pos.clone().setY(pos.y + 1.5), 0xffd23f, 90, 14, 0.9, sparks);
+  confettiBurst(track.point(L, 0, 3), 260);
+  r.body.auraSprite.material.opacity = 0.55;
+  r.body.auraSprite.material.color.set(0xffd23f);
+  pop('✨ +1000 АУРЫ ✨', headPos(r).add(V(0, 1.5, 0)), '#ffd23f');
+  const v = $('#aurafx');
+  v.classList.remove('show'); void v.offsetWidth; v.classList.add('show');
+  director.shake = Math.max(director.shake, 0.6);
+  sfx('win', 1);
+  sfx('boom', 0.5);
+}
+
+// 2-е и 3-е места — проще: короткий облёт, вспышка цвета медали
+function podiumFinish(r) {
+  const color = r.place === 2 ? 0xdfe6ff : 0xff9a4d;
+  director.focus(performance.now() / 1000, r, 2000 - r.place, 1.8, '', 'hero');
+  slowMo(0.6, 0.7);
+  auraBeam(r, color, 0.22, 2);
+  shockwave(worldPos(r), color, 8, 0.7);
+  pop(r.place === 2 ? '🥈 ВТОРОЙ' : '🥉 ТРЕТИЙ', headPos(r).add(V(0, 1.2, 0)), r.place === 2 ? '#dfe6ff' : '#ff9a4d');
+  sfx('pad', 0.3);
+}
+
 // препятствия
 let lastHitFeed = 0;
 // мем-подписи, которые всплывают над бегунами
@@ -834,7 +878,7 @@ function onEffect(user, effect, count, extra) {
   const shown = racers.find(x => x.id === user.id);
   if (extra.source !== 'like' && shown && shown.place === null && shown.landed && effect.kind !== 'lightning' && effect.kind !== 'nuke') {
     const weight = extra.source === 'gift' ? Math.max(2, extra.diamonds || 1) : extra.source === 'follow' ? 8 : 5;
-    director.focus(performance.now() / 1000, shown, weight, 2.8);
+    director.focus(performance.now() / 1000, shown, weight, 3.5);
   }
   if (extra.source !== 'like') showGift(user, effect, count, extra);
 
@@ -1028,6 +1072,7 @@ function updateHud(real) {
   else if (phase === 'results') line = `Новый забег через ${left}с`;
   $('#phase').textContent = line;
   $('#hud').classList.toggle('racing', phase === 'race');
+  $('#hud').classList.toggle('results', phase === 'results');
   pumpGift();
   $('#status').textContent = status;
 
@@ -1138,6 +1183,9 @@ function update(dt) {
         dust(worldPos(r, 0.2), 12);
       }
     }
+    // забег не короче min_race_seconds: лидер не может обогнать «планку темпа»
+    const maxP = L * (clock - raceStart) / (RACE.min_race_seconds || 60) + 15;
+    if (r.p > maxP) r.p = Math.max(prev, maxP);
     let airY = 0;
     if (r.air) {
       const k = (r.p - r.air.from) / r.air.len;
@@ -1162,10 +1210,10 @@ function update(dt) {
       r.finish = clock - raceStart;
       r.place = ++finishedCount;
       if (r.place <= 3) pushFeed(`${['🥇', '🥈', '🥉'][r.place - 1]} ${short(r.name)} — ${r.finish.toFixed(1)}с`, cssColor(r.id), r.place === 1);
+      if (r.place === 2 || r.place === 3) podiumFinish(r);
       if (r.place === 1) {
         firstFinish = clock;
-        confettiBurst(track.point(L, 0, 3));
-        sfx('win', 1);
+        winnerAura(r);
         banner(short(r.name, 14), 'ПОБЕДА 🏆');
         const second = runningLeader(null);
         if (second && L - second.p < L * 0.025) { slowMo(0.3, 1.4); banner('📸 ФОТОФИНИШ'); }
@@ -1184,6 +1232,14 @@ function update(dt) {
     leaderId = lead.id;
     leadChangeAt = clock;
     for (const r of racers) { r.tag.classList.toggle('lead', r === lead); refreshTag(r); }
+  }
+  // лидер у самого финиша — «аура-камера»: слоу-мо и облёт вокруг героя
+  if (!heroShown && lead && lead.place === null && lead.p > L - 30) {
+    heroShown = true;
+    director.focus(performance.now() / 1000, lead, 3000, 3.4, '', 'hero');
+    slowMo(0.35, 2.2);
+    sound.redrop(true);
+    auraBeam(lead, 0xffc21a, 0.2);
   }
   if (!finalStretch && lead && lead.p > L * 0.85) {
     finalStretch = true;
@@ -1208,6 +1264,18 @@ function animate(dt, real) {
       const pd = PODIUM[r.podium];
       root.position.copy(track.point(podiumP(), pd.x, pd.h));
       root.rotation.set(0, track.yaw(podiumP()) + Math.PI + Math.sin(real * 2) * 0.3, 0);
+    } else if (phase === 'results' && r.lying) {
+      // лежит на спине, руки в стороны, иногда дёргается
+      root.position.copy(track.point(r.lying.p, r.lying.lat, 0));
+      root.rotation.set(0, r.lying.yaw, 0);
+      b.body.rotation.set(Math.PI / 2, 0, 0);
+      b.body.position.set(0, 0.35, 0);
+      b.armL.rotation.set(0, 0, 1.3 + Math.sin(real * 3 + r.wp) * 0.1);
+      b.armR.rotation.set(0, 0, -1.3);
+      b.legL.rotation.set(0, 0, 0.3); b.legR.rotation.set(0, 0, -0.3 + (Math.sin(real * 7 + r.wp) > 0.95 ? 0.4 : 0));
+      b.blob.visible = false;
+      if (Math.random() < dt * 0.25) floatEmoji(Math.random() < 0.5 ? '💀' : '😭', root.position.clone().add(V(0, 1.5, 0)), { size: 1.4, life: 1.6, vy: 1.2 });
+      continue;
     } else {
       root.position.copy(worldPos(r));
       root.rotation.set(0, track.yaw(Math.max(r.p, -20)), 0);
@@ -1308,8 +1376,24 @@ function animate(dt, real) {
     s.material.opacity = clamp((camera.position.distanceTo(wp) - 12) / 14, 0, 1);
   }
 
+  // золотые столбы света и спираль искр вокруг героя
+  for (let i = beams.length - 1; i >= 0; i--) {
+    const bm = beams[i];
+    bm.life -= dt;
+    const pos = worldPos(bm.r);
+    bm.m.position.copy(pos).setY(pos.y + 20);
+    bm.m.material.opacity = clamp(bm.life / bm.max, 0, 1) * bm.alpha * (0.85 + Math.sin(real * 12) * 0.15);
+    bm.m.scale.set(1 + Math.sin(real * 6) * 0.08, 1, 1 + Math.sin(real * 6) * 0.08);
+    for (let k = 0; k < 3; k++) {
+      const a = real * 7 + k * 2.1;
+      sparks.spawn(pos.clone().add(V(Math.cos(a) * 1.6, 0.2 + ((real * 3 + k) % 3), Math.sin(a) * 1.6)), V(0, 3, 0), { life: 0.6, size: 0.6, color: bm.color });
+    }
+    if (bm.life <= 0) { scene.remove(bm.m); bm.m.geometry.dispose(); bm.m.material.dispose(); beams.splice(i, 1); }
+  }
+
   // таблички с никами
   for (const r of racers) {
+    if (phase === 'results' && r.lying) { r.tag.style.display = 'none'; continue; }
     const hp = r.podium !== undefined && phase === 'results' ? r.body.root.position.clone().add(V(0, 3.1, 0)) : headPos(r);
     const s = toScreen(hp);
     const hide = s.behind || s.x < -60 || s.x > W + 60 || s.y < 240 || s.y > H;

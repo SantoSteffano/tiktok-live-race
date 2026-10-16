@@ -13,7 +13,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 RUN useradd -m race && mkdir -p /app/data && chown -R race /app/data
-USER race
 
 ENV PYTHONUNBUFFERED=1
-CMD ["bash", "stream/start.sh"]
+# стартует от root только чтобы выставить права на data/, дальше — от race
+CMD ["bash", "stream/docker-entry.sh"]

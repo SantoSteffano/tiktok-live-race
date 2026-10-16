@@ -1,0 +1,29 @@
+{
+  "port": 8765,
+
+  "join": {
+    "any_comment": true,
+    "keywords": ["го", "go", "+", "я", "join"]
+  },
+  "roblox_skins": true,
+
+  "effects": {
+    "like":   {"kind": "boost", "multiplier": 1.15, "seconds": 1.0, "label": "👍 лайк"},
+    "follow": {"kind": "boost", "multiplier": 2.0,  "seconds": 5.0, "label": "➕ подписка — турбо!"},
+    "share":  {"kind": "jump",  "studs": 25, "label": "🔁 репост — рывок!"}
+  },
+
+  "gifts_by_name": {
+    "rose":         {"kind": "boost", "multiplier": 2.0, "seconds": 3.0, "label": "🌹 турбо"},
+    "tiktok":       {"kind": "boost", "multiplier": 1.8, "seconds": 3.0, "label": "🎵 турбо"},
+    "finger heart": {"kind": "jump",  "studs": 35, "label": "🫰 рывок"}
+  },
+
+  "gifts_by_diamonds": [
+    {"min": 1,   "kind": "boost", "multiplier": 1.8, "seconds": 3.0, "label": "🎁 турбо"},
+    {"min": 10,  "kind": "jump",  "studs": 70,  "label": "🚀 джетпак"},
+    {"min": 100, "kind": "jump",  "studs": 200, "label": "💥 суперджетпак"}
+  ],
+
+  "max_gift_repeat": 10
+}

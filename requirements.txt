@@ -1,0 +1,2 @@
+TikTokLive>=7
+aiohttp>=3.9

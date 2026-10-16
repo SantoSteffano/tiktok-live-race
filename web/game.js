@@ -417,6 +417,7 @@ function startLobby() {
   phaseEnd = clock + RACE.lobby_seconds;
   botsAdded = false; finalStretch = false; countdownShown = -1; delayed = [];
   sound.setLevel(0);
+  sound.newRound();
   $('#results').classList.remove('show');
   buildMap();
 }
@@ -451,6 +452,7 @@ function startRace() {
   raceStart = clock; firstFinish = null; finishedCount = 0; leaderId = null;
   director.resetRace();
   sound.setLevel(1);
+  sound.drop();
   sound.play('go');
   flash(0.4);
   showCountdown('GO!');
@@ -614,6 +616,7 @@ function nuke(sender, effect) {
   director.event(performance.now() / 1000, sender, 3);
   slowMo(0.35, 1.2);
   sfx('nuke', 0.5);
+  sound.redrop(true);
   banner('☢️ ЯДЕРКА ☢️', `от ${short(sender.name, 18)}`);
 }
 
@@ -624,23 +627,26 @@ function slowMo(scale, seconds) {
 
 // препятствия
 let lastHitFeed = 0;
+const KNOCK_TIME = 0.75;
+function onHit(r, hit) {
+  window.raceDebug.hits++;
+  r.stunUntil = clock + 1.2;
+  // отлетает туда, куда его толкнуло препятствие (вбок от молота, по дуге от вертушки)
+  r.knock = { t: clock, vLat: hit.vLat, vFwd: hit.vFwd - 2, dir: Math.sign(hit.vLat) || 1 };
+  r.air = null;
+  setMood(r, 'stun');
+  burst(worldPos(r, 1.5), 0xffffff, 22, 8);
+  shockwave(worldPos(r, 1.2), 0xff4fa3, 3, 0.4);
+  pop(hit.by === 'hammer' ? '💥 БОНК' : '🌀 СНЕСЛО', headPos(r), '#ff4fa3');
+  sfx('bonk', 0.08);
+  if (r.id === leaderId && clock - lastHitFeed > 3) {
+    lastHitFeed = clock;
+    pushFeed(`💥 ${short(r.name)} снесло ${hit.by === 'hammer' ? 'молотом' : 'вертушкой'}!`, cssColor(r.id), true);
+  }
+}
+
 function onObstacle(r, ev) {
-  if (ev.type === 'hit') {
-    if (r.jumpLeft > 0 || r.y > 1.2 || Math.random() < 0.15) { pop('😎 УВЕРНУЛСЯ', headPos(r), '#7dff5a'); return; }
-    r.stunUntil = clock + 1.1;
-    r.knock = { t: clock, dir: Math.random() < 0.5 ? -1 : 1 };
-    r.p = Math.max(0, r.p - 6);
-    setMood(r, 'stun');
-    burst(worldPos(r, 1.5), 0xffffff, 18, 7);
-    pop(ev.by === 'hammer' ? '💥 БОНК' : '🌀 СНЕСЛО', headPos(r), '#ff4fa3');
-    sfx('bonk', 0.08);
-    if (r.id === leaderId && clock - lastHitFeed > 3) {
-      lastHitFeed = clock;
-      pushFeed(`💥 ${short(r.name)} снесло ${ev.by === 'hammer' ? 'молотом' : 'вертушкой'}!`, cssColor(r.id), true);
-    }
-  } else if (ev.type === 'hop') {
-    r.air = { from: r.p, len: 10, h: 1.6 };
-  } else if (ev.type === 'ramp') {
+  if (ev.type === 'ramp') {
     r.air = { from: r.p, len: 34, h: 3.2 };
     sfx('ramp', 0.25);
   } else if (ev.type === 'pad') {
@@ -909,7 +915,10 @@ function update(dt) {
   if (phase === 'lobby') {
     if (!botsAdded && clock > phaseEnd - 6) addBots();
     const left = Math.ceil(phaseEnd - clock);
-    if (left <= 3 && left >= 1 && left !== countdownShown) { countdownShown = left; showCountdown(String(left)); sfx('beep', 0.5); }
+    if (left <= 3 && left >= 1 && left !== countdownShown) {
+      if (countdownShown === -1 || left === 3) sound.preDrop(phaseEnd - clock);   // нарастание к дропу на «GO!»
+      countdownShown = left; showCountdown(String(left)); sfx('beep', 0.5);
+    }
     if (clock >= phaseEnd) startRace();
   } else if (phase === 'results' && clock >= phaseEnd) {
     startLobby();
@@ -932,9 +941,23 @@ function update(dt) {
   for (const d of delayed.filter(d => d.at <= clock)) apply(d.r, d.effect, d.count, d.extra);
   delayed = delayed.filter(d => d.at > clock);
 
+  const edge = track.roadW / 2 - 0.6;
   for (const r of racers) {
-    if (r.place !== null || r.stunUntil > clock) continue;
+    if (r.place !== null) continue;
+    // полёт после удара
+    if (r.knock && clock - r.knock.t < KNOCK_TIME) {
+      const k = (clock - r.knock.t) / KNOCK_TIME;
+      r.lat = clamp(r.lat + r.knock.vLat * dt * (1 - k), -edge, edge);
+      r.p = Math.max(0, r.p + r.knock.vFwd / K * dt * (1 - k));
+      r.y = Math.sin(k * Math.PI) * 2.4;
+      continue;
+    }
+    if (r.knock) { r.knock = null; r.y = 0; dust(worldPos(r, 0.1), 8); }
+    if (r.stunUntil > clock) continue;
     if (r.body.mood === 'stun') setMood(r, r.baseMood);
+    // после удара плавно возвращается на свою дорожку
+    const home = laneLat(r.lane);
+    r.lat += clamp(home - r.lat, -1.5 * dt, 1.5 * dt);
     let mult = 1;
     for (const b of r.boosts) mult += b.mult - 1;
     mult = Math.min(mult, RACE.max_speed_multiplier);
@@ -960,7 +983,18 @@ function update(dt) {
       if (k >= 1) { r.air = null; dust(worldPos(r, 0.1), 6); } else airY = Math.sin(k * Math.PI) * r.air.h;
     }
     r.y = Math.max(jetY, airY);
-    if (r.jumpLeft <= 0) for (const ev of track.interact(prev, r.p, r.lat, clock)) onObstacle(r, ev);
+    if (r.jumpLeft <= 0) {
+      for (const ev of track.interact(prev, r.p)) onObstacle(r, ev);
+      // перекладина вертушки на подходе — иногда успевает подпрыгнуть
+      const soon = !r.air && track.sweeperSoon(r.p, r.lat, clock);
+      if (soon && r.hopFor !== soon) {
+        r.hopFor = soon;
+        if (Math.random() < 0.45) r.air = { from: r.p, len: 12, h: 1.9 };
+      }
+      const hit = track.collide(r.p, r.lat, r.y, clock);
+      // одно препятствие сбивает бегуна максимум один раз
+      if (hit && !r.hitBy?.has(hit.o)) { (r.hitBy ||= new Set()).add(hit.o); onHit(r, hit); continue; }
+    }
 
     if (r.p >= L) {
       r.p = L; r.jumpLeft = 0; r.y = 0; r.air = null;
@@ -992,6 +1026,7 @@ function update(dt) {
   if (!finalStretch && lead && lead.p > L * 0.85) {
     finalStretch = true;
     sound.setLevel(2);
+    sound.redrop();
     banner('ФИНИШНАЯ ПРЯМАЯ 🔥');
   }
   const allDone = racers.every(r => r.place !== null);
@@ -1028,8 +1063,8 @@ function animate(dt, real) {
       b.legL.rotation.x = b.legR.rotation.x = 0;
       b.body.position.y = Math.abs(Math.sin(t / 2)) * 0.5;
     } else if (stunned) {
-      if (r.knock && clock - r.knock.t < 0.7) {
-        const k = (clock - r.knock.t) / 0.7;
+      if (r.knock && clock - r.knock.t < KNOCK_TIME) {
+        const k = (clock - r.knock.t) / KNOCK_TIME;
         b.body.rotation.set(-k * Math.PI * 2, 0, r.knock.dir * 0.6);
         b.body.position.y = Math.sin(k * Math.PI) * 2.5;
       } else {
@@ -1141,6 +1176,7 @@ fit();
 connect();
 requestAnimationFrame(frame);
 
+window.raceDebug = { sound, hits: 0, get phase() { return phase; } };   // для отладки из консоли
 sound.start();
 const hint = $('#hint');
 setTimeout(() => { if (!sound.started && !sound.muted && !params.has('nohint')) hint.style.display = 'block'; }, 800);

@@ -1,7 +1,13 @@
 // Музыка и звуки.
-// Музыка — твои файлы из папки music/ (mp3/ogg/m4a/wav), играют по кругу
-// в случайном порядке. На результатах приглушаются «как из-за стены».
+// Музыка — твои файлы из папки music/ (mp3/ogg/m4a/wav). Плеер сам слушает
+// каждый трек и находит в нём «дроп» — самый мощный кусок. Каждый забег —
+// новый трек: в лобби играет начало, за 3 секунды до старта трек переходит
+// на нарастание перед дропом, и дроп падает ровно на «GO!». На ядерке и
+// финишной прямой — пауза-напряжение и снова дроп, на результатах музыка
+// звучит глухо, «из-за стены».
 // Звуковые эффекты синтезируются (WebAudio), файлов для них не нужно.
+
+const LEVEL_GAIN = { 0: 0.55, 1: 0.85, 2: 0.95, 3: 0.5 };
 
 export class Sound {
   constructor() {
@@ -9,6 +15,9 @@ export class Sound {
     this.level = 0;
     this.tracks = [];
     this.order = [];
+    this.current = null;      // имя текущего трека
+    this.info = new Map();    // имя → {drop, duration}
+    this.lastRedrop = 0;
     this.muted = new URLSearchParams(location.search).has('mute');
   }
 
@@ -18,11 +27,13 @@ export class Sound {
     if (this.muted) return;
     if (!this.ctx) this.build();
     if (this.ctx.state !== 'running') this.ctx.resume();
-    if (this.el && this.el.paused && this.el.src) this.el.play().catch(() => {});
+    const d = this.deck;
+    if (d && d.el.paused && d.el.src) d.el.play().catch(() => {});
   }
 
   build() {
     const ctx = this.ctx = new AudioContext();
+    ctx.addEventListener('statechange', () => { if (this.pendingRound) this.newRound(); });
     this.master = ctx.createGain();
     this.master.gain.value = 0.9;
     const comp = ctx.createDynamicsCompressor();
@@ -30,12 +41,14 @@ export class Sound {
     comp.ratio.value = 4;
     this.master.connect(comp).connect(ctx.destination);
 
+    // деки → громкость фазы → «пригибание» под эффекты → фильтр → мастер
     this.music = ctx.createGain();
-    this.music.gain.value = 0.8;
+    this.music.gain.value = LEVEL_GAIN[0];
+    this.ducker = ctx.createGain();
     this.musicFilter = ctx.createBiquadFilter();
     this.musicFilter.type = 'lowpass';
     this.musicFilter.frequency.value = 20000;
-    this.music.connect(this.musicFilter).connect(this.master);
+    this.music.connect(this.ducker).connect(this.musicFilter).connect(this.master);
 
     this.sfx = ctx.createGain();
     this.sfx.gain.value = 0.85;
@@ -49,27 +62,165 @@ export class Sound {
     this.crush = this.shaper(90);
     this.crush.connect(this.sfx);
 
-    this.el = document.createElement('audio');
-    this.el.crossOrigin = 'anonymous';
-    this.el.addEventListener('ended', () => this.next());
-    this.el.addEventListener('error', () => setTimeout(() => this.next(), 1000));
-    ctx.createMediaElementSource(this.el).connect(this.music);
+    // две деки для плавных переходов между кусками трека
+    this.decks = [0, 1].map(() => {
+      const el = document.createElement('audio');
+      el.crossOrigin = 'anonymous';
+      el.preload = 'auto';
+      const gain = ctx.createGain();
+      gain.gain.value = 0;
+      ctx.createMediaElementSource(el).connect(gain).connect(this.music);
+      el.addEventListener('ended', () => { if (this.deck?.el === el) this.onEnded(); });
+      return { el, gain };
+    });
+    this.active = 0;
     this.loadPlaylist();
   }
+
+  get deck() { return this.decks?.[this.active]; }
 
   async loadPlaylist() {
     try {
       this.tracks = await (await fetch('/music/list')).json();
     } catch { this.tracks = []; }
-    if (!this.tracks.length) console.warn('music/ пустая — положи туда mp3, и они будут играть');
-    this.next();
+    if (!this.tracks.length) { console.warn('music/ пустая — положи туда mp3, и они будут играть'); return; }
+    if (this.pendingRound || !this.current) this.newRound();
   }
 
-  next() {
-    if (!this.tracks.length) return;
+  pick() {
     if (!this.order.length) this.order = [...this.tracks].sort(() => Math.random() - 0.5);
-    this.el.src = '/music/' + encodeURIComponent(this.order.shift());
-    this.el.play().catch(() => {});
+    return this.order.shift();
+  }
+
+  url(name) { return '/music/' + encodeURIComponent(name); }
+
+  // Ищем дроп: самый громкий 8-секундный кусок, а в нём — момент, где громкость
+  // резче всего прыгает вверх. Результат кешируем в браузере.
+  async analyze(name) {
+    if (this.info.has(name)) return this.info.get(name);
+    const key = 'race-drop2:' + name;
+    try {
+      const cached = JSON.parse(localStorage.getItem(key) || 'null');
+      if (cached) { this.info.set(name, cached); return cached; }
+    } catch {}
+    const buf = await this.ctx.decodeAudioData(await (await fetch(this.url(name))).arrayBuffer());
+    const data = buf.getChannelData(0), sr = buf.sampleRate, win = Math.floor(sr / 2);
+    const e = [];
+    for (let i = 0; i + win <= data.length; i += win) {
+      let sum = 0;
+      for (let j = i; j < i + win; j += 8) sum += data[j] * data[j];
+      e.push(Math.sqrt(sum / (win / 8)));
+    }
+    const mean = (a, b) => { let s = 0; for (let i = a; i < b; i++) s += e[i] || 0; return s / Math.max(1, b - a); };
+    // уровень самого мощного 8-секундного куска…
+    const span = 16;
+    let peak = 0;
+    for (let i = 0; i + span <= e.length; i++) peak = Math.max(peak, mean(i, i + span));
+    // …и первый момент после 8-й секунды, где трек выходит на этот уровень
+    let first = Math.min(40, e.length - 1);
+    for (let i = 16; i + span <= e.length; i++) if (mean(i, i + span) >= peak * 0.85) { first = i; break; }
+    // уточняем: где именно громкость прыгает вверх
+    let drop = first, jump = -1;
+    for (let j = Math.max(8, first - 8); j <= first + 8 && j + 4 < e.length; j++) {
+      const d = mean(j, j + 4) - mean(j - 4, j);
+      if (d > jump) { jump = d; drop = j; }
+    }
+    const info = { drop: drop / 2, duration: buf.duration };
+    this.info.set(name, info);
+    try { localStorage.setItem(key, JSON.stringify(info)); } catch {}
+    return info;
+  }
+
+  dropOf(name) {
+    const i = this.info.get(name);
+    return i ? i.drop : null;
+  }
+
+  // перейти на другой трек/место: новая дека разгоняется, старая затухает
+  async crossTo(name, time, fade = 0.3) {
+    if (!this.ctx) return;
+    const from = this.deck;
+    this.active = 1 - this.active;
+    const to = this.deck;
+    const src = this.url(name);
+    if (!to.el.src.endsWith(src)) to.el.src = src;
+    await new Promise(res => {
+      if (to.el.readyState >= 1) return res();
+      to.el.addEventListener('loadedmetadata', res, { once: true });
+      setTimeout(res, 3000);
+    });
+    try { to.el.currentTime = Math.max(0, time); } catch {}
+    to.el.play().catch(() => {});
+    this.current = name;
+    const t = this.ctx.currentTime;
+    to.gain.gain.cancelScheduledValues(t);
+    to.gain.gain.setValueAtTime(to.gain.gain.value, t);
+    to.gain.gain.linearRampToValueAtTime(1, t + fade);
+    if (from && from !== to) {
+      from.gain.gain.cancelScheduledValues(t);
+      from.gain.gain.setValueAtTime(from.gain.gain.value, t);
+      from.gain.gain.linearRampToValueAtTime(0, t + fade);
+      setTimeout(() => { if (this.deck !== from) from.el.pause(); }, fade * 1000 + 100);
+    }
+  }
+
+  // ---- хуки игры ----
+  newRound() {
+    // звук ещё не разрешён или плейлист не загружен — запустим, как только сможем
+    if (!this.started || !this.tracks.length) { this.pendingRound = true; return; }
+    this.pendingRound = false;
+    const name = this.pick();
+    this.analyze(name).catch(e => console.warn('не удалось разобрать трек', name, e));
+    this.crossTo(name, 0, 1.5);
+  }
+
+  // за lead секунд до старта — на нарастание перед дропом
+  preDrop(lead = 3) {
+    const drop = this.dropOf(this.current);
+    if (drop === null || !this.deck) return;
+    const want = drop - lead;
+    if (Math.abs(this.deck.el.currentTime - want) > 0.8) this.crossTo(this.current, want, 0.6);
+  }
+
+  // старт: дроп падает ровно сейчас
+  drop() {
+    const drop = this.dropOf(this.current) ?? (this.deck ? this.deck.el.currentTime : 0);
+    if (this.deck && Math.abs(this.deck.el.currentTime - drop) > 0.5) this.crossTo(this.current, drop, 0.08);
+    this.openFilter(0.05);
+  }
+
+  // эпичный момент: на полсекунды «затянуть» звук, потом снова дроп
+  redrop(force = false) {
+    if (!this.started || !this.current) return;
+    const now = performance.now() / 1000;
+    if (!force && now - this.lastRedrop < 14) return;
+    this.lastRedrop = now;
+    const t = this.ctx.currentTime, f = this.musicFilter.frequency;
+    f.cancelScheduledValues(t);
+    f.setValueAtTime(f.value, t);
+    f.exponentialRampToValueAtTime(350, t + 0.45);
+    setTimeout(() => {
+      const drop = this.dropOf(this.current);
+      if (drop !== null) this.crossTo(this.current, drop, 0.05);
+      this.openFilter(0.03);
+    }, 500);
+  }
+
+  openFilter(time) {
+    if (!this.ctx) return;
+    const t = this.ctx.currentTime, f = this.musicFilter.frequency;
+    f.cancelScheduledValues(t);
+    f.setValueAtTime(Math.max(f.value, 300), t);
+    f.exponentialRampToValueAtTime(this.level === 3 ? 700 : 20000, t + time + 0.01);
+  }
+
+  onEnded() {
+    // трек кончился: во время гонки сразу следующий с дропа, иначе с начала
+    const name = this.pick();
+    this.analyze(name).then(info => {
+      if (this.level === 1 || this.level === 2) this.crossTo(name, info.drop, 0.2);
+    }).catch(() => {});
+    if (this.level !== 1 && this.level !== 2) this.crossTo(name, 0, 0.5);
   }
 
   shaper(k) {
@@ -88,16 +239,16 @@ export class Sound {
     const f = this.musicFilter.frequency, g = this.music.gain;
     f.cancelScheduledValues(t); g.cancelScheduledValues(t);
     f.setTargetAtTime(level === 3 ? 700 : 20000, t, 0.35);
-    g.setTargetAtTime({ 0: 0.6, 1: 0.8, 2: 0.95, 3: 0.55 }[level], t, 0.5);
+    g.setTargetAtTime(LEVEL_GAIN[level], t, 0.5);
   }
 
-  // приглушить музыку на мгновение (под «бум», ядерку)
+  // приглушить музыку на мгновение (под «бум», молнию)
   duck(amount = 0.35, time = 0.8) {
     if (!this.started) return;
-    const t = this.ctx.currentTime, g = this.music.gain, v = g.value;
+    const t = this.ctx.currentTime, g = this.ducker.gain;
     g.cancelScheduledValues(t);
-    g.setValueAtTime(v * amount, t);
-    g.setTargetAtTime(v, t + 0.05, time);
+    g.setValueAtTime(amount, t);
+    g.setTargetAtTime(1, t + 0.05, time);
   }
 
   env(node, t, peak, attack, decay) {

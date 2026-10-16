@@ -167,7 +167,7 @@ export class Track {
     for (let i = 0; i < trees; i++) {
       const p = -40 + rnd() * (this.L + 120);
       const side = rnd() < 0.5 ? -1 : 1;
-      const at = this.point(p, side * (W / 2 + 4 + rnd() * 50), 0);
+      const at = this.point(p, side * (W / 2 + 16 + rnd() * 50), 0);   // коридор у трассы — для камеры
       const sc = 0.7 + rnd() * 1.1;
       m4.compose(at.clone().setY(-1.2 + 1.2 * sc), q, new THREE.Vector3(sc, sc, sc));
       trunk.setMatrixAt(i, m4);
@@ -359,28 +359,64 @@ export class Track {
     return 1;
   }
 
-  // Бегун пробежал отрезок prev→now: что с ним случилось?
-  interact(prev, now, lat, t) {
+  // Бегун пробежал отрезок prev→now: наступил на трамплин, бустер, слизь?
+  interact(prev, now) {
     const out = [];
     for (const o of this.obstacles) {
       if (!(prev < o.p && now >= o.p)) continue;
-      if (o.type === 'hammer') {
-        for (const h of o.hammers) {
-          const a = this.hammerAngle(h, t);
-          const headLat = h.x + h.R * Math.sin(a);
-          const headY = h.H - h.R * Math.cos(a);
-          // локальная ось X рамы противоположна нормали трассы
-          if (headY < 3.4 && Math.abs(-lat - headLat) < 1.9) { out.push({ type: 'hit', by: 'hammer', o }); break; }
-        }
-      } else if (o.type === 'sweeper') {
-        const s = Math.abs(Math.sin(this.sweepAngle(o, t)));
-        if (s < 0.3) out.push({ type: 'hit', by: 'sweeper', o });
-        else if (s < 0.55) out.push({ type: 'hop', o });
-      } else if (o.type === 'ramp') out.push({ type: 'ramp', o });
+      if (o.type === 'ramp') out.push({ type: 'ramp', o });
       else if (o.type === 'boost') out.push({ type: 'pad', o });
       else if (o.type === 'slime') out.push({ type: 'slime', o });
     }
     return out;
+  }
+
+  // Столкновение тела бегуна с молотом или вертушкой — каждый кадр, по
+  // настоящей геометрии. Координаты в системе препятствия: x = -lat (ось X
+  // рамы смотрит против нормали трассы), z = -dz (вперёд по трассе — это -Z).
+  collide(p, lat, y, t) {
+    for (const o of this.obstacles) {
+      if (o.type !== 'hammer' && o.type !== 'sweeper') continue;
+      const dz = (p - o.p) * this.K;
+      if (Math.abs(dz) > 2.5) continue;
+      const x = -lat, z = -dz;
+      if (o.type === 'hammer') {
+        if (Math.abs(z) > 1.3 + 0.3) continue;
+        for (const h of o.hammers) {
+          const a = this.hammerAngle(h, t);
+          const hx = h.x + h.R * Math.sin(a), hy = h.H - h.R * Math.cos(a);
+          const cy = Math.min(Math.max(hy, y + 0.2), y + 2.4);   // ближайшая точка тела
+          if (Math.hypot(x - hx, cy - hy) < 1.2 + 0.45) {
+            // отбрасывает по ходу замаха
+            const swing = Math.cos(t * 2.1 + h.phase) * Math.cos(a);
+            return { by: 'hammer', o, vLat: (swing >= 0 ? -1 : 1) * 9, vFwd: 0 };
+          }
+        }
+      } else {
+        if (y > 1.3) continue;   // перепрыгнул
+        const th = this.sweepAngle(o, t);
+        const d = Math.abs(x * Math.sin(th) + z * Math.cos(th));
+        if (d < 0.4 + 0.35) {
+          // скорость точки перекладины: ω × r
+          const vx = 1.7 * z, vz = -1.7 * x;
+          const n = Math.hypot(vx, vz) || 1;
+          return { by: 'sweeper', o, vLat: -vx / n * 7, vFwd: -vz / n * 7 };
+        }
+      }
+    }
+    return null;
+  }
+
+  // Перекладина вертушки вот-вот заденет бегуна (для заблаговременного прыжка)
+  sweeperSoon(p, lat, t) {
+    for (const o of this.obstacles) {
+      if (o.type !== 'sweeper') continue;
+      const dz = (p - o.p) * this.K;
+      if (Math.abs(dz) > 3) continue;
+      const th = this.sweepAngle(o, t + 0.22);
+      if (Math.abs(-lat * Math.sin(th) + -dz * Math.cos(th)) < 0.9) return o;
+    }
+    return null;
   }
 
   nextObstacle(p) {

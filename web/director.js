@@ -70,7 +70,7 @@ export class Director {
       } else {
         const ob = tr.nextObstacle(lp);
         // лидер подбегает к препятствию — в 60% случаев режем на «засаду»
-        if (ob && ob.p - lp < 80 && ob.p - lp > 10 && !this.usedObstacles.has(ob)) {
+        if (ob && ob.p - lp < 50 && ob.p - lp > 8 && !this.usedObstacles.has(ob)) {
           this.usedObstacles.add(ob);
           if (ob.type !== 'boost' && ob.type !== 'ramp' && Math.random() < 0.7) this.setShot('obstacle', real, 4.2, { o: ob });
         }
@@ -122,9 +122,9 @@ export class Director {
         break;
       case 'side': {   // сбоку, «телевик», едет вместе с толпой
         const p = (lead.p + packP) / 2;
-        pos = tr.point(p + t * 6, this.side * (W / 2 + 24), 5);
+        pos = tr.point(p + t * 6, this.side * (W / 2 + 11), 5);
         look = tr.point(p + 8, 0, 1.4);
-        fov = 40;
+        fov = 46;
         break;
       }
       case 'drone': {  // сверху, медленно облетает
@@ -149,7 +149,7 @@ export class Director {
       case 'event': {
         const r = this.override.target;
         const k = this.override.until - real;
-        pos = tr.point(r.p + (5 + k) * M, this.side * 6, 4 + k * 0.5);
+        pos = tr.point(r.p + (8 + k) * M, this.side * 7, 5 + (r.y || 0) * 0.6 + k * 0.5);
         look = tr.point(r.p, r.lat, (r.y || 0) + 1.6);
         fov = 40;
         break;

@@ -36,12 +36,15 @@
 
 ## Проверить у себя (Mac, 5 минут)
 
-Нужен Python 3.10+ (python.org).
+Нужен **Python 3.10 или новее**. Встроенный в macOS `python3` — старый 3.9,
+с ним не встанут зависимости. Поставь Python 3.12 с
+[python.org](https://www.python.org/downloads/) (или `brew install python@3.12`)
+и создавай окружение именно им:
 
 ```bash
 git clone https://github.com/SantoSteffano/tiktok-live-race.git
 cd tiktok-live-race
-python3 -m venv venv && source venv/bin/activate
+python3.12 -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
 python server.py --demo
 ```

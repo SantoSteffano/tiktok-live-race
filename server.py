@@ -10,6 +10,14 @@
     python server.py --demo                  # фейковые зрители для отладки
 """
 
+import sys
+
+if sys.version_info < (3, 10):
+    sys.exit(f"Нужен Python 3.10 или новее, а запущен {sys.version.split()[0]}.\n"
+             "Поставь свежий с https://www.python.org/downloads/ и пересоздай окружение:\n"
+             "  rm -rf venv && python3.12 -m venv venv && source venv/bin/activate\n"
+             "  pip install -r requirements.txt")
+
 import argparse
 import asyncio
 import json

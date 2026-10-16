@@ -1,12 +1,12 @@
 """
-Мост «TikTok LIVE → Roblox» для интерактивной гонки.
+Гонка чата для TikTok LIVE.
 
-Сервер слушает чат стрима (комментарии, лайки, подписки, репосты, подарки),
-переводит события в игровые действия по config.json и складывает их в
-очередь. Игра в Roblox Studio (скрипты из папки roblox/) раз в полсекунды
-забирает новые события по HTTP: GET /events?after=<номер последнего>.
+Сервер слушает эфир (комментарии, лайки, подписки, репосты, подарки),
+переводит события в игровые действия по config.json и рассылает их странице
+с 3D-гонкой (web/index.html) через WebSocket. Ещё он считает АУРУ зрителей
+и сохраняет её между эфирами в data/aura.json.
 
-    python server.py --tiktok ник_стримера   # живой стрим
+    python server.py --tiktok ник_стримера   # живой эфир
     python server.py --demo                  # фейковые зрители для отладки
 """
 
@@ -16,14 +16,13 @@ import json
 import logging
 import random
 import re
-from collections import deque
 from pathlib import Path
 
-from aiohttp import web
+from aiohttp import WSMsgType, web
 
 HERE = Path(__file__).parent
-LONG_POLL_SECONDS = 5
-ROBLOX_NAME = re.compile(r"^[A-Za-z0-9_]{3,20}$")
+WEB = HERE / "web"
+DATA = HERE / "data"
 
 log = logging.getLogger("tiktok_live_race")
 
@@ -33,93 +32,115 @@ def load_config(path: Path) -> dict:
         return json.load(f)
 
 
-def describe(effect: dict) -> str:
-    if effect["kind"] == "boost":
-        return f"скорость ×{effect['multiplier']:g} на {effect['seconds']:g}с"
-    return f"рывок вперёд на {effect['studs']}"
+class Aura:
+    """Очки ауры зрителей: копятся за лайки, подарки и победы, хранятся на диске."""
 
-
-def legend(config: dict) -> list[str]:
-    """Строки подсказки на экране игры: как вступить и что дают баффы."""
-    join = config["join"]
-    how = "любое сообщение" if join.get("any_comment", True) else f"«{join['keywords'][0]}»"
-    lines = [f"💬 Напиши {how} — ты в забеге! Свой ник Roblox — бежишь в своём скине"]
-    names = {"like": "👍 Лайк", "follow": "➕ Подписка", "share": "🔁 Репост"}
-    for kind, title in names.items():
-        if kind in config["effects"]:
-            lines.append(f"{title}: {describe(config['effects'][kind])}")
-    for name, effect in config.get("gifts_by_name", {}).items():
-        lines.append(f"{effect['label'].split()[0]} {name.title()}: {describe(effect)}")
-    tiers = sorted(config.get("gifts_by_diamonds", []), key=lambda t: t["min"])
-    for tier in tiers[1:]:
-        lines.append(f"{tier['label'].split()[0]} Подарок от {tier['min']}💎: {describe(tier)}")
-    return lines
-
-
-class Bridge:
-    """Очередь событий, которую забирает игра в Roblox."""
-
-    def __init__(self, config: dict):
+    def __init__(self, config: dict, path: Path):
         self.config = config
-        self.events: deque[dict] = deque(maxlen=1000)
-        self.seq = 0
-        self.status = "запуск…"
-        self.legend = legend(config)
-        self.new_event = asyncio.Condition()
+        self.path = path
+        self.users: dict[str, dict] = {}
+        if path.exists():
+            try:
+                self.users = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                log.warning("не удалось прочитать %s, начинаю с нуля", path)
+        self._dirty = False
 
-    async def push(self, msg: dict) -> None:
-        self.seq += 1
-        self.events.append({"seq": self.seq, **msg})
-        log.info("→ %s", json.dumps(msg, ensure_ascii=False))
-        async with self.new_event:
-            self.new_event.notify_all()
+    def title(self, points: int) -> str:
+        title = ""
+        for need, name in self.config["titles"]:
+            if points >= need:
+                title = name
+        return title
+
+    def user(self, uid: str, name: str) -> dict:
+        entry = self.users.setdefault(uid, {"name": name, "aura": 0})
+        entry["name"] = name
+        return {"id": uid, "name": name, "aura": entry["aura"], "title": self.title(entry["aura"])}
+
+    def add(self, uid: str, name: str, points: int) -> dict:
+        entry = self.users.setdefault(uid, {"name": name, "aura": 0})
+        entry["aura"] += int(points)
+        self._dirty = True
+        return self.user(uid, name)
+
+    def top(self, n: int = 5) -> list[dict]:
+        best = sorted(self.users.items(), key=lambda kv: kv[1]["aura"], reverse=True)[:n]
+        return [{"name": e["name"], "aura": e["aura"], "title": self.title(e["aura"])}
+                for _, e in best if e["aura"] > 0]
+
+    async def autosave(self) -> None:
+        while True:
+            await asyncio.sleep(5)
+            if self._dirty:
+                self._dirty = False
+                self.path.parent.mkdir(exist_ok=True)
+                tmp = self.path.with_suffix(".tmp")
+                tmp.write_text(json.dumps(self.users, ensure_ascii=False), encoding="utf-8")
+                tmp.replace(self.path)
+
+
+class Hub:
+    """Все открытые страницы с гонкой (в облаке — одна, плюс превью)."""
+
+    def __init__(self, config: dict, aura: Aura):
+        self.config = config
+        self.aura = aura
+        self.clients: set[web.WebSocketResponse] = set()
+        self.status = "запуск…"
+
+    async def broadcast(self, msg: dict) -> None:
+        data = json.dumps(msg, ensure_ascii=False)
+        for ws in list(self.clients):
+            try:
+                await ws.send_str(data)
+            except ConnectionError:
+                self.clients.discard(ws)
 
     async def set_status(self, text: str) -> None:
         self.status = text
         log.info("статус: %s", text)
+        await self.broadcast({"type": "status", "text": text})
 
-    def since(self, after: int) -> list[dict]:
-        return [e for e in self.events if e["seq"] > after]
+    async def send_top(self) -> None:
+        await self.broadcast({"type": "aura_top", "top": self.aura.top()})
 
-    async def handle_events(self, request: web.Request) -> web.Response:
+    async def handle_ws(self, request: web.Request) -> web.WebSocketResponse:
+        ws = web.WebSocketResponse(heartbeat=20)
+        await ws.prepare(request)
+        self.clients.add(ws)
+        await ws.send_json({"type": "config", "config": self.config})
+        await ws.send_json({"type": "status", "text": self.status})
+        await ws.send_json({"type": "aura_top", "top": self.aura.top()})
         try:
-            after = int(request.query.get("after", "-1"))
-        except ValueError:
-            after = -1
-        # Игра только запустилась (after=-1) или мост перезапускали
-        # (after > seq) — старые события не отдаём, только номер, с которого
-        # начинать, чтобы не воскрешать зрителей, писавших полчаса назад.
-        if after < 0 or after > self.seq:
-            events = []
-        else:
-            events = self.since(after)
-            if not events:
-                try:
-                    async with self.new_event:
-                        await asyncio.wait_for(self.new_event.wait(), LONG_POLL_SECONDS)
-                except asyncio.TimeoutError:
-                    pass
-                events = self.since(after)
-        return web.json_response({
-            "last": self.seq,
-            "status": self.status,
-            "legend": self.legend,
-            "events": events,
-        })
+            async for msg in ws:
+                if msg.type == WSMsgType.TEXT:
+                    await self.on_page_message(json.loads(msg.data))
+                elif msg.type == WSMsgType.ERROR:
+                    break
+        finally:
+            self.clients.discard(ws)
+        return ws
 
-    async def handle_index(self, _: web.Request) -> web.Response:
-        recent = "\n".join(json.dumps(e, ensure_ascii=False) for e in list(self.events)[-30:])
-        body = (f"Мост гонки работает.\nСтатус: {self.status}\nСобытий: {self.seq}\n\n"
-                f"Последние события:\n{recent}\n")
-        return web.Response(text=body)
+    async def on_page_message(self, msg: dict) -> None:
+        # Страница сообщает о победе — начисляем ауру победителю.
+        if msg.get("type") == "win" and msg.get("id"):
+            user = self.aura.add(msg["id"], msg.get("name", msg["id"]),
+                                 self.config["aura"].get("per_win", 0))
+            await self.broadcast({"type": "user", "user": user})
+            await self.send_top()
 
 
 class EventMapper:
-    """Переводит события стрима в сообщения для игры по config.json."""
+    """Переводит события эфира в сообщения для страницы по config.json."""
 
-    def __init__(self, config: dict, bridge: Bridge):
+    def __init__(self, config: dict, hub: Hub):
         self.config = config
-        self.bridge = bridge
+        self.hub = hub
+        self.aura = hub.aura
+        emotes = config.get("emotes", {})
+        self.word_emotes = {k.lower(): v for k, v in emotes.items() if re.fullmatch(r"\w+", k)}
+        self.char_emotes = {k: v for k, v in emotes.items() if not re.fullmatch(r"\w+", k)}
 
     def wants_to_join(self, text: str) -> bool:
         join = self.config["join"]
@@ -128,29 +149,29 @@ class EventMapper:
         words = text.lower().split()
         return any(k.lower() in words for k in join.get("keywords", []))
 
-    def roblox_name(self, text: str) -> str | None:
-        """Сообщение из одного слова латиницей похоже на ник Roblox."""
-        text = text.strip().lstrip("@")
-        keywords = {k.lower() for k in self.config["join"].get("keywords", [])}
-        if ROBLOX_NAME.match(text) and text.lower() not in keywords:
-            return text
+    def emote(self, text: str) -> str | None:
+        for key, emoji in self.char_emotes.items():
+            if key in text:
+                return emoji
+        for word in re.findall(r"\w+", text.lower()):
+            if word in self.word_emotes:
+                return self.word_emotes[word]
         return None
 
-    async def comment(self, user: dict, text: str) -> None:
+    async def comment(self, uid: str, name: str, text: str) -> None:
+        user = self.aura.user(uid, name)
         if self.wants_to_join(text):
-            msg = {"type": "join", "user": user}
-            if self.config.get("roblox_skins", True):
-                name = self.roblox_name(text)
-                if name:
-                    msg["roblox"] = name
-            await self.bridge.push(msg)
+            await self.hub.broadcast({"type": "join", "user": user})
+        emoji = self.emote(text)
+        if emoji:
+            await self.hub.broadcast({"type": "emote", "user": user, "emoji": emoji})
 
-    async def social(self, user: dict, kind: str, count: int = 1) -> None:
+    async def social(self, uid: str, name: str, kind: str, count: int = 1) -> None:
+        user = self.aura.add(uid, name, self.config["aura"].get(f"per_{kind}", 0) * count)
         effect = self.config["effects"].get(kind)
         if effect:
-            await self.bridge.push(
-                {"type": "effect", "user": user, "effect": effect, "count": count}
-            )
+            await self.hub.broadcast({"type": "effect", "user": user, "effect": effect,
+                                      "count": count, "source": kind})
 
     def gift_effect(self, name: str, diamonds: int) -> dict | None:
         effect = self.config.get("gifts_by_name", {}).get(name.strip().lower())
@@ -162,29 +183,32 @@ class EventMapper:
                 return tier
         return None
 
-    async def gift(self, user: dict, name: str, diamonds: int, count: int) -> None:
-        effect = self.gift_effect(name, diamonds)
-        if not effect or count <= 0:
+    async def gift(self, uid: str, name: str, gift: str, diamonds: int, count: int) -> None:
+        if count <= 0:
             return
-        count = min(count, self.config.get("max_gift_repeat", 10))
-        suffix = f"{name}×{count}" if count > 1 else name
-        await self.bridge.push({
-            "type": "effect", "user": user,
-            "effect": {**effect, "label": f"{effect.get('label', '🎁')} ({suffix})"},
-            "count": count,
-        })
+        user = self.aura.add(uid, name, self.config["aura"].get("per_diamond", 0) * diamonds * count)
+        effect = self.gift_effect(gift, diamonds)
+        if effect:
+            count = min(count, self.config.get("max_gift_repeat", 10))
+            suffix = f"{gift}×{count}" if count > 1 else gift
+            await self.hub.broadcast({
+                "type": "effect", "user": user, "source": "gift", "count": count,
+                "diamonds": diamonds * count,
+                "effect": {**effect, "label": f"{effect.get('label', '🎁')} ({suffix})"},
+            })
+        await self.hub.send_top()
 
 
 # --- TikTok -----------------------------------------------------------------
 
-def tiktok_user(user) -> dict | None:
+def tiktok_user(user) -> tuple[str, str] | None:
     if user is None:
         return None
     handle = user.unique_id or str(user.id)
-    return {"id": handle, "name": user.nickname or handle}
+    return handle, (user.nickname or handle)
 
 
-async def run_tiktok(username: str, mapper: EventMapper, bridge: Bridge) -> None:
+async def run_tiktok(username: str, mapper: EventMapper, hub: Hub) -> None:
     from TikTokLive import TikTokLiveClient
     from TikTokLive.client.errors import UserNotFoundError, UserOfflineError
     from TikTokLive.events import (
@@ -203,114 +227,117 @@ async def run_tiktok(username: str, mapper: EventMapper, bridge: Bridge) -> None
 
         @client.on(ConnectEvent)
         async def on_connect(_: ConnectEvent):
-            await bridge.set_status(f"🔴 подключено к @{username}")
+            await hub.set_status(f"🔴 подключено к @{username}")
 
         @client.on(CommentEvent)
         async def on_comment(event: CommentEvent):
-            user = tiktok_user(event.user)
-            if user:
-                await mapper.comment(user, event.content or "")
+            who = tiktok_user(event.user)
+            if who:
+                await mapper.comment(*who, event.content or "")
 
         @client.on(LikeEvent)
         async def on_like(event: LikeEvent):
-            user = tiktok_user(event.user)
-            if user:
-                await mapper.social(user, "like", max(1, event.count or 1))
+            who = tiktok_user(event.user)
+            if who:
+                await mapper.social(*who, "like", max(1, event.count or 1))
 
         @client.on(FollowEvent)
         async def on_follow(event: FollowEvent):
-            user = tiktok_user(event.user)
-            if user:
-                await mapper.social(user, "follow")
+            who = tiktok_user(event.user)
+            if who:
+                await mapper.social(*who, "follow")
 
         @client.on(ShareEvent)
         async def on_share(event: ShareEvent):
-            user = tiktok_user(event.user)
-            if user:
-                await mapper.social(user, "share")
+            who = tiktok_user(event.user)
+            if who:
+                await mapper.social(*who, "share")
 
         @client.on(GiftEvent)
         async def on_gift(event: GiftEvent):
-            user = tiktok_user(event.user)
-            if not user or event.gift is None:
+            who = tiktok_user(event.user)
+            if not who or event.gift is None:
                 return
-            key = (user["id"], event.gift.id, event.group_id)
+            key = (who[0], event.gift.id, event.group_id)
             total = max(1, event.repeat_count or 1)
             new = total - streaks.get(key, 0)
             if event.streaking:
                 streaks[key] = total
             else:
                 streaks.pop(key, None)
-            await mapper.gift(user, event.gift.name or "gift",
-                              event.gift.diamond_count or 0, new)
+            await mapper.gift(*who, event.gift.name or "gift", event.gift.diamond_count or 0, new)
 
         @client.on(LiveEndEvent)
         async def on_end(_: LiveEndEvent):
-            await bridge.set_status("стрим закончился")
+            await hub.set_status("эфир закончился")
 
         @client.on(DisconnectEvent)
         async def on_disconnect(_: DisconnectEvent):
-            await bridge.set_status("отключено, переподключаюсь…")
+            await hub.set_status("отключено, переподключаюсь…")
 
         try:
-            await bridge.set_status(f"подключаюсь к @{username}…")
+            await hub.set_status(f"подключаюсь к @{username}…")
             await client.connect()
         except UserOfflineError:
-            await bridge.set_status(f"@{username} сейчас не в эфире — жду")
+            await hub.set_status(f"@{username} сейчас не в эфире — жду")
         except UserNotFoundError:
-            await bridge.set_status(f"аккаунт @{username} не найден")
+            await hub.set_status(f"аккаунт @{username} не найден")
             return
         except Exception as ex:  # сеть, подпись запросов и т.п. — пробуем снова
             log.exception("ошибка TikTok")
-            await bridge.set_status(f"ошибка TikTok: {type(ex).__name__}, повтор…")
+            await hub.set_status(f"ошибка TikTok: {type(ex).__name__}, повтор…")
         streaks.clear()
         await asyncio.sleep(20)
 
 
 # --- Демо -------------------------------------------------------------------
 
-# Несколько настоящих ников Roblox, чтобы в демо было видно скины.
 DEMO_NAMES = [
-    ("Котик_2010", None), ("Маша", "Builderman"), ("pro_gamer", None), ("Лёха", None),
-    ("dasha.vlog", None), ("Тимур", "Roblox"), ("nika", None), ("Бабушка_Зина", None),
-    ("Артём", None), ("ShadowFox", None), ("Вика", None), ("Илья", None),
-    ("КРАШ", None), ("lola", None), ("Серёжа", None), ("Аня", None),
+    "Котик_2010", "Маша", "pro_gamer", "Лёха", "dasha.vlog", "Тимур", "nika",
+    "Бабушка_Зина", "Артём", "ShadowFox", "Вика", "Илья", "КРАШ", "lola",
+    "Серёжа", "minecraft_king", "Аня", "Олег", "sasha_k", "Дед_Инсайд",
 ]
-DEMO_GIFTS = [("Rose", 1), ("TikTok", 1), ("Finger Heart", 5),
-              ("Doughnut", 30), ("Hat and Mustache", 99), ("Galaxy", 1000)]
+DEMO_COMMENTS = ["го", "+", "я", "го го го", "🗿", "сигма", "💀", "скибиди", "67", "аура",
+                 "имба", "ахах", "gg", "😎", "🤡", "кто выиграет?", "давай!"]
+DEMO_GIFTS = [("Rose", 1), ("TikTok", 1), ("Finger Heart", 5), ("Doughnut", 30),
+              ("Hat and Mustache", 99), ("Galaxy", 1000)]
 
 
-async def run_demo(mapper: EventMapper, bridge: Bridge) -> None:
-    await bridge.set_status("ДЕМО: фейковые зрители")
-    users = [({"id": n, "name": n}, skin) for n, skin in DEMO_NAMES]
-    joined: list[dict] = []
+async def run_demo(mapper: EventMapper, hub: Hub) -> None:
+    await hub.set_status("ДЕМО: фейковые зрители")
+    joined: list[str] = []
     while True:
-        await asyncio.sleep(random.uniform(0.3, 1.2))
+        await asyncio.sleep(random.uniform(0.25, 1.0))
         roll = random.random()
-        if roll < 0.25 or not joined:
-            user, skin = random.choice(users)
-            if user not in joined:
-                joined.append(user)
-            await mapper.comment(user, skin or "го")
-        elif roll < 0.75:
-            await mapper.social(random.choice(joined), "like", random.randint(1, 5))
-        elif roll < 0.82:
-            await mapper.social(random.choice(joined), "follow")
-        elif roll < 0.87:
-            await mapper.social(random.choice(joined), "share")
+        if roll < 0.3 or not joined:
+            name = random.choice(DEMO_NAMES)
+            if name not in joined:
+                joined.append(name)
+            await mapper.comment(name, name, random.choice(DEMO_COMMENTS))
+        elif roll < 0.72:
+            name = random.choice(joined)
+            await mapper.social(name, name, "like", random.randint(1, 5))
+        elif roll < 0.78:
+            name = random.choice(joined)
+            await mapper.social(name, name, "follow")
+        elif roll < 0.83:
+            name = random.choice(joined)
+            await mapper.social(name, name, "share")
         else:
-            name, diamonds = random.choices(DEMO_GIFTS, weights=[40, 25, 15, 10, 6, 1])[0]
-            await mapper.gift(random.choice(joined), name, diamonds, random.randint(1, 3))
+            gift, diamonds = random.choices(DEMO_GIFTS, weights=[45, 28, 15, 7, 4, 1])[0]
+            name = random.choice(joined)
+            await mapper.gift(name, name, gift, diamonds, random.randint(1, 3))
 
 
 # --- Запуск -----------------------------------------------------------------
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Мост TikTok LIVE → Roblox для гонки")
+    parser = argparse.ArgumentParser(description="Гонка чата для TikTok LIVE")
     source = parser.add_mutually_exclusive_group(required=True)
     source.add_argument("--tiktok", metavar="НИК", help="ник стримера в TikTok (можно с @)")
     source.add_argument("--demo", action="store_true", help="фейковые зрители для отладки")
     parser.add_argument("--config", default=str(HERE / "config.json"))
+    parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int)
     args = parser.parse_args()
 
@@ -318,26 +345,30 @@ def main() -> None:
     config = load_config(Path(args.config))
 
     async def build_app() -> web.Application:
-        bridge = Bridge(config)
-        mapper = EventMapper(config, bridge)
+        aura = Aura(config, DATA / "aura.json")
+        hub = Hub(config, aura)
+        mapper = EventMapper(config, hub)
+
         app = web.Application()
-        app.router.add_get("/", bridge.handle_index)
-        app.router.add_get("/events", bridge.handle_events)
+        app.router.add_get("/ws", hub.handle_ws)
+        app.router.add_get("/", lambda _: web.FileResponse(WEB / "index.html"))
+        app.router.add_static("/web", WEB)
 
-        async def start_source(app_: web.Application):
-            coro = run_demo(mapper, bridge) if args.demo else run_tiktok(args.tiktok, mapper, bridge)
-            app_["source"] = asyncio.create_task(coro)
+        async def start(app_: web.Application):
+            source = run_demo(mapper, hub) if args.demo else run_tiktok(args.tiktok, mapper, hub)
+            app_["tasks"] = [asyncio.create_task(source), asyncio.create_task(aura.autosave())]
 
-        async def stop_source(app_: web.Application):
-            app_["source"].cancel()
+        async def stop(app_: web.Application):
+            for task in app_["tasks"]:
+                task.cancel()
 
-        app.on_startup.append(start_source)
-        app.on_cleanup.append(stop_source)
+        app.on_startup.append(start)
+        app.on_cleanup.append(stop)
         return app
 
     port = args.port or config.get("port", 8765)
-    print(f"\n  Мост запущен: http://localhost:{port}  (в RaceConfig.lua — BridgeUrl)\n")
-    web.run_app(build_app(), host="127.0.0.1", port=port, print=None)
+    print(f"\n  Гонка: http://localhost:{port}  (в OBS — «Браузер», 1080×1920)\n")
+    web.run_app(build_app(), host=args.host, port=port, print=None)
 
 
 if __name__ == "__main__":

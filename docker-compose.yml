@@ -1,0 +1,8 @@
+services:
+  race:
+    build: .
+    env_file: .env
+    restart: unless-stopped
+    shm_size: 1gb          # Chromium падает с маленьким /dev/shm
+    volumes:
+      - ./data:/app/data   # аура зрителей переживает перезапуски
